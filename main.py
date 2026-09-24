@@ -1,0 +1,1 @@
+print("MantAI is running!")
