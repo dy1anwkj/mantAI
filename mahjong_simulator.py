@@ -1,18 +1,20 @@
 import random
 from collections import Counter
 
-# Define Mahjong tiles (Characters, Bamboo, Dots, Winds, Dragons)
-characters = [('character', i) for i in range(1, 10)]
+from hand_eval import analyze_hand, evaluate_discard_quality
+
+# Define Mahjong tiles (Bamboo, Dots, Wan, Winds, Dragons)
 bamboo = [('bamboo', i) for i in range(1, 10)]
 dots = [('dot', i) for i in range(1, 10)]
+wan = [('wan', i) for i in range(1, 10)]
 winds = [('wind', d) for d in ['east', 'south', 'west', 'north']]
 dragons = [('dragon', d) for d in ['red', 'green', 'white']]
 
-tiles = characters + bamboo + dots + winds + dragons  # 136 tiles
+tiles = (bamboo + dots + wan + winds + dragons) * 4
 
 class MahjongGame:
     def __init__(self):
-        self.wall = tiles * 4
+        self.wall = list(tiles)
         random.shuffle(self.wall)
         self.hands = [[] for _ in range(4)]
         self.discards = [[] for _ in range(4)]
@@ -47,15 +49,67 @@ class MahjongGame:
         return True
 
     def format_tile(self, tile):
-        if tile[0] in ['bamboo', 'character', 'dot']:
-            return f"{tile[1]} {tile[0]}"
-        else:
-            return f"{tile[1].capitalize()} {tile[0].capitalize()}"
+        if tile[0] == 'bamboo':
+            return f"{tile[1]} bamboo"
+        if tile[0] == 'dot':
+            return f"{tile[1]} dots"
+        if tile[0] == 'wan':
+            return f"{tile[1]} wan"
+        return f"{tile[1].capitalize()} {tile[0].capitalize()}"
+
+    def sort_tiles(self, tiles):
+        suit_order = {'bamboo': 0, 'dot': 1, 'wan': 2, 'wind': 3, 'dragon': 4}
+        rank_order = {'east': 0, 'south': 1, 'west': 2, 'north': 3, 'red': 0, 'green': 1, 'white': 2}
+
+        def tile_key(tile):
+            suit, value = tile
+            if suit in ['bamboo', 'dot', 'wan']:
+                return (suit_order[suit], int(value), suit)
+            return (suit_order[suit], rank_order[value], value)
+
+        return sorted(tiles, key=tile_key)
 
     def show_hands(self):
         for i, hand in enumerate(self.hands):
-            formatted = [self.format_tile(t) for t in hand]
+            formatted = [self.format_tile(t) for t in self.sort_tiles(hand)]
             print(f"Player {i + 1} hand: {formatted}")
+
+    def get_concealed_hand_size(self, player_index):
+        return len(self.hands[player_index])
+
+    def get_total_active_tiles(self, player_index):
+        return len(self.hands[player_index]) + sum(len(meld) for meld in self.melds[player_index])
+
+    def expose_meld_from_hand(self, player_index, meld_tiles):
+        before = self.hands[player_index][:]
+        for tile in meld_tiles:
+            if tile in self.hands[player_index]:
+                self.hands[player_index].remove(tile)
+
+        removed_from_hand = len(before) - len(self.hands[player_index])
+        extra_discarded_tiles = len(meld_tiles) - removed_from_hand
+        for _ in range(max(0, extra_discarded_tiles)):
+            if self.hands[player_index]:
+                self.hands[player_index].pop()
+
+    def enforce_concealed_hand_limit(self, player_index):
+        while len(self.hands[player_index]) > 13:
+            extra_tile = self.hands[player_index].pop()
+            print(f"Player {player_index + 1} had too many concealed tiles; removed extra {self.format_tile(extra_tile)} to keep hand at 13.")
+
+    def show_player_state(self, player_index):
+        hand = self.sort_tiles(self.hands[player_index])
+        melds = []
+        for meld in self.melds[player_index]:
+            melds.append([self.format_tile(t) for t in self.sort_tiles(meld)])
+
+        print(f"Player {player_index + 1} concealed hand ({len(hand)} tiles): {[self.format_tile(t) for t in hand]}")
+        if melds:
+            print(f"Player {player_index + 1} current melds: {melds}")
+            print(f"Player {player_index + 1} total active tiles: {self.get_total_active_tiles(player_index)}")
+        else:
+            print(f"Player {player_index + 1} current melds: []")
+            print(f"Player {player_index + 1} total active tiles: {len(hand)}")
 
     def show_discards(self):
         for i, discard in enumerate(self.discards):
@@ -77,7 +131,7 @@ class MahjongGame:
         if len(tiles) != 3:
             return False
         suits = [t[0] for t in tiles]
-        if suits[0] not in ['bamboo', 'character', 'dot'] or len(set(suits)) > 1:
+        if suits[0] not in ['bamboo', 'dot', 'wan'] or len(set(suits)) > 1:
             return False
         ranks = sorted(t[1] for t in tiles)
         return ranks[1] == ranks[0] + 1 and ranks[2] == ranks[1] + 1
@@ -90,38 +144,40 @@ class MahjongGame:
         if len(hand) != 14:
             return False
 
-        def remove_sets(hand, sets):
-            if sets == 4 and len(hand) == 2 and self.is_pair(hand):
+        def can_partition(tiles):
+            if not tiles:
                 return True
-            if sets > 4:
-                return False
-            for tile in set(hand):
-                if hand.count(tile) >= 3:
-                    new_hand = hand.copy()
+
+            tiles = list(tiles)
+            unique_tiles = sorted(set(tiles), key=lambda t: (t[0], t[1] if isinstance(t[1], int) else 99))
+
+            for tile in unique_tiles:
+                count = tiles.count(tile)
+
+                if count >= 3:
+                    remaining = tiles.copy()
                     for _ in range(3):
-                        new_hand.remove(tile)
-                    if remove_sets(new_hand, sets + 1):
+                        remaining.remove(tile)
+                    if can_partition(remaining):
                         return True
-                if tile[0] in ['bamboo', 'character', 'dot']:
+
+                if tile[0] in ['bamboo', 'dot', 'wan'] and count >= 1:
                     next1 = (tile[0], tile[1] + 1)
                     next2 = (tile[0], tile[1] + 2)
-                    if next1 in hand and next2 in hand:
-                        new_hand = hand.copy()
-                        new_hand.remove(tile)
-                        new_hand.remove(next1)
-                        new_hand.remove(next2)
-                        if remove_sets(new_hand, sets + 1):
+                    if next1 in tiles and next2 in tiles:
+                        remaining = tiles.copy()
+                        remaining.remove(tile)
+                        remaining.remove(next1)
+                        remaining.remove(next2)
+                        if can_partition(remaining):
                             return True
+
+            if len(tiles) == 2 and tiles[0] == tiles[1]:
+                return True
+
             return False
 
-        counts = Counter(hand)
-        for pair_tile in [tile for tile, c in counts.items() if c >= 2]:
-            temp_hand = hand.copy()
-            temp_hand.remove(pair_tile)
-            temp_hand.remove(pair_tile)
-            if remove_sets(temp_hand, 0):
-                return True
-        return False
+        return can_partition(hand)
 
     def get_hints(self, player_index):
         hand = self.hands[player_index]
@@ -131,7 +187,7 @@ class MahjongGame:
             if count >= 3:
                 hints.append(f"Pong possible with {self.format_tile(tile)}")
         for tile in hand:
-            if tile[0] in ['bamboo', 'character', 'dot']:
+            if tile[0] in ['bamboo', 'dot', 'wan']:
                 need1 = (tile[0], tile[1] + 1)
                 need2 = (tile[0], tile[1] + 2)
                 if need1 in hand and need2 in hand:
@@ -157,7 +213,7 @@ class MahjongGame:
         i = 0
         while i < len(leftover):
             tile = leftover[i]
-            if tile[0] in ['bamboo', 'character', 'dot']:
+            if tile[0] in ['bamboo', 'dot', 'wan']:
                 suit, rank = tile
                 seq = [(suit, rank), (suit, rank + 1), (suit, rank + 2)]
                 if all(s in leftover for s in seq):
@@ -174,12 +230,13 @@ class MahjongGame:
     def perform_pong(self, player_index, discarder_index, tile):
         if not self.can_pong(player_index, tile):
             return False
-        for _ in range(2):
-            self.hands[player_index].remove(tile)
+        self.expose_meld_from_hand(player_index, [tile, tile, tile])
         if self.discards[discarder_index]:
             self.discards[discarder_index].pop()
         self.melds[player_index].append([tile] * 3)
+        self.enforce_concealed_hand_limit(player_index)
         print(f"Player {player_index + 1} calls Pong on {self.format_tile(tile)}")
+        print(f"Player {player_index + 1} now has {len(self.hands[player_index])} concealed tiles left after exposing the meld.")
         self.current_player = player_index
         return True
 
@@ -187,7 +244,7 @@ class MahjongGame:
         if player_index != (self.current_player + 1) % 4:
             return False  # Can only Chi if you are next player after discarder
         suit, rank = tile
-        if suit not in ['bamboo', 'character', 'dot']:
+        if suit not in ['bamboo', 'dot', 'wan']:
             return False
         hand = self.hands[player_index]
         sequences = [
@@ -210,12 +267,14 @@ class MahjongGame:
         ]
         for seq in sequences:
             if all(t in hand for t in seq):
-                for t in seq:
-                    self.hands[player_index].remove(t)
+                meld_tiles = [tile] + seq
+                self.expose_meld_from_hand(player_index, meld_tiles)
                 if self.discards[discarder_index]:
                     self.discards[discarder_index].pop()
-                self.melds[player_index].append([tile] + seq)
+                self.melds[player_index].append(meld_tiles)
+                self.enforce_concealed_hand_limit(player_index)
                 print(f"Player {player_index + 1} calls Chi on {self.format_tile(tile)} with sequence {[self.format_tile(t) for t in seq]}")
+                print(f"Player {player_index + 1} now has {len(self.hands[player_index])} concealed tiles left after exposing the meld.")
                 self.current_player = player_index
                 return True
         return False
@@ -226,12 +285,13 @@ class MahjongGame:
     def perform_kong(self, player_index, discarder_index, tile):
         if not self.can_kong(player_index, tile):
             return False
-        for _ in range(3):
-            self.hands[player_index].remove(tile)
+        self.expose_meld_from_hand(player_index, [tile, tile, tile, tile])
         if self.discards[discarder_index]:
             self.discards[discarder_index].pop()
         self.melds[player_index].append([tile] * 4)
+        self.enforce_concealed_hand_limit(player_index)
         print(f"Player {player_index + 1} calls Kong on {self.format_tile(tile)}")
+        print(f"Player {player_index + 1} now has {len(self.hands[player_index])} concealed tiles left after exposing the meld.")
         self.current_player = player_index
         return True
 
@@ -241,16 +301,66 @@ class MahjongGame:
             combined_hand.extend(meld)
         return self.check_win(sorted(combined_hand))
 
+def estimate_discard_win_chance(game, player_index, tile):
+    hand = game.hands[player_index]
+    visible_tiles = []
+    for discard_pile in game.discards:
+        visible_tiles.extend(discard_pile)
+    for player_melds in game.melds:
+        for meld in player_melds:
+            visible_tiles.extend(meld)
+
+    quality = evaluate_discard_quality(
+        hand,
+        tile,
+        exposed_melds=game.melds[player_index],
+        visible_tiles=visible_tiles,
+    )
+    remaining = [t for t in hand if t != tile]
+    after_analysis = analyze_hand(
+        remaining,
+        exposed_melds=game.melds[player_index],
+        visible_tiles=visible_tiles,
+    )
+
+    raw_score = (
+        quality["after_score"]
+        + 140 * len(after_analysis["waits"])
+        + 25 * len(after_analysis["useful_tiles"])
+        - 10 * len(quality["waits_before"])
+    )
+    percentage = max(0.0, min(99.0, 52.0 + raw_score / 55.0))
+    return round(percentage, 1)
+
+
 def choose_discard_tile(game):
-    hand = game.hands[game.current_player]
-    print("\nYour hand:")
-    for i, tile in enumerate(hand):
-        print(f"{i + 1}: {game.format_tile(tile)}")
+    hand = game.sort_tiles(game.hands[game.current_player])
+    discard_ratings = []
+
+    for tile in hand:
+        chance = estimate_discard_win_chance(game, game.current_player, tile)
+        discard_ratings.append((tile, chance))
+
+    best_tile, best_percentage = max(discard_ratings, key=lambda item: item[1])
+
+    print("\nYour sorted hand:")
+    for i, tile in enumerate(hand, start=1):
+        chance = next(chance for candidate, chance in discard_ratings if candidate == tile)
+        print(f"{i}: {game.format_tile(tile)}  -- estimated win chance if discarded: {chance:.1f}%")
+
+    if game.melds[game.current_player]:
+        print("Your current melds:")
+        for meld in game.melds[game.current_player]:
+            print("  -", [game.format_tile(t) for t in game.sort_tiles(meld)])
+
+    print(f"\nBest discard: {game.format_tile(best_tile)} ({best_percentage:.1f}% estimated win chance)")
+
     while True:
         try:
             choice = int(input(f"Player {game.current_player + 1}, choose tile to discard (1-{len(hand)}): "))
             if 1 <= choice <= len(hand):
-                return hand[choice - 1]
+                chosen_tile = hand[choice - 1]
+                return chosen_tile
         except ValueError:
             pass
         print("Invalid choice. Please enter a number corresponding to the tile you want to discard.")
@@ -262,20 +372,43 @@ def yes_no_prompt(prompt):
             return ans == 'y'
         print("Please enter 'y' or 'n'.")
 
-def ai_choose_discard(hand):
-    counts = Counter(hand)
-    tile_scores = {}
-    for tile in hand:
-        score = 0
-        score -= counts[tile] * 2
-        suit, rank = tile
-        if suit in ['bamboo', 'character', 'dot']:
-            for adj in [(suit, rank - 1), (suit, rank + 1)]:
-                if adj in hand:
-                    score -= 1
-        tile_scores[tile] = score
-    worst_tile = max(tile_scores, key=tile_scores.get)
-    return worst_tile
+def ai_choose_discard(game, player_index):
+    hand = game.hands[player_index]
+    if not hand:
+        return None
+
+    visible_tiles = []
+    for discard_pile in game.discards:
+        visible_tiles.extend(discard_pile)
+    for player_melds in game.melds:
+        for meld in player_melds:
+            visible_tiles.extend(meld)
+
+    best_tile = None
+    best_rank = None
+
+    for tile in sorted(set(hand), key=lambda t: (t[0], t[1])):
+        quality = evaluate_discard_quality(
+            hand,
+            tile,
+            exposed_melds=game.melds[player_index],
+            visible_tiles=visible_tiles,
+        )
+
+        rank = (
+            quality["after_score"]
+            + 100 * len(quality["waits_after"])
+            - 25 * len(quality["waits_before"])
+        )
+
+        if best_rank is None or rank > best_rank:
+            best_rank = rank
+            best_tile = tile
+
+    if best_tile is None:
+        return hand[0]
+    return best_tile
+
 
 def main():
     import time
@@ -308,6 +441,8 @@ def main():
                 print("Wall exhausted. Game ends in a draw.")
                 break
 
+        if game.current_player == 0:
+            game.show_player_state(0)
         hints = game.get_hints(game.current_player)
         if hints and not (first_turn and game.current_player == game.dealer):
             print("Hints:")
@@ -325,7 +460,26 @@ def main():
             if game.can_hu(game.current_player):
                 print(f"Player {game.current_player + 1} declares Hu and wins!")
                 break
-            discard_tile = ai_choose_discard(game.hands[game.current_player])
+
+            visible_tiles = []
+            for discard_pile in game.discards:
+                visible_tiles.extend(discard_pile)
+            for player_melds in game.melds:
+                for meld in player_melds:
+                    visible_tiles.extend(meld)
+
+            hand_analysis = analyze_hand(
+                game.hands[game.current_player],
+                game.melds[game.current_player],
+                visible_tiles,
+            )
+            print(
+                f"AI analysis: score={hand_analysis['strength']['score']:.1f}, "
+                f"waits={len(hand_analysis['waits'])}, "
+                f"useful={[(tile[0], tile[1]) for tile in [item['tile'] for item in hand_analysis['useful_tiles'][:3]]]}"
+            )
+
+            discard_tile = ai_choose_discard(game, game.current_player)
             print(f"Player {game.current_player + 1} (AI) discards {game.format_tile(discard_tile)}")
 
         game.discard_tile(discard_tile)
@@ -333,11 +487,16 @@ def main():
         pong_called = False
         kong_called = False
 
-        # Kong calls
+        # Kong calls: AI players auto-decide, human still prompts only for their own turn
         for i in range(1, 4):
             player = (game.current_player + i) % 4
             if game.can_kong(player, discard_tile):
-                if player == 0 or yes_no_prompt(f"Player {player + 1}, Kong possible with {game.format_tile(discard_tile)}. Call Kong?"):
+                if player == 0:
+                    call_kong = yes_no_prompt(f"You can Kong {game.format_tile(discard_tile)}. Call Kong?")
+                else:
+                    call_kong = True
+
+                if call_kong:
                     kong_called = game.perform_kong(player, game.current_player, discard_tile)
                     if kong_called:
                         print(f"Kong called by Player {player + 1}, turn goes to them.")
@@ -348,7 +507,12 @@ def main():
             for i in range(1, 4):
                 player = (game.current_player + i) % 4
                 if game.can_pong(player, discard_tile):
-                    if player == 0 or yes_no_prompt(f"Player {player + 1}, Pong possible with {game.format_tile(discard_tile)}. Call Pong?"):
+                    if player == 0:
+                        call_pong = yes_no_prompt(f"You can Pong {game.format_tile(discard_tile)}. Call Pong?")
+                    else:
+                        call_pong = True
+
+                    if call_pong:
                         pong_called = game.perform_pong(player, game.current_player, discard_tile)
                         if pong_called:
                             print(f"Pong called by Player {player + 1}, turn goes to them.")
@@ -358,7 +522,12 @@ def main():
         if not kong_called and not pong_called:
             next_player = (game.current_player + 1) % 4
             if game.can_chi(next_player, discard_tile):
-                if next_player == 0 or yes_no_prompt(f"Player {next_player + 1}, Chi possible with {game.format_tile(discard_tile)}. Call Chi?"):
+                if next_player == 0:
+                    call_chi = yes_no_prompt(f"You can Chi {game.format_tile(discard_tile)}. Call Chi?")
+                else:
+                    call_chi = True
+
+                if call_chi:
                     chi_called = game.perform_chi(next_player, game.current_player, discard_tile)
                     if chi_called:
                         print(f"Chi called by Player {next_player + 1}, turn goes to them.")
