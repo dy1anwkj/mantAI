@@ -34,6 +34,7 @@ from functools import lru_cache
 from hand_eval import (
     ALL_TILE_TYPES,
     NUMBER_SUITS,
+    analyze_hand,
     format_tile,
     hand_structure_score,
     is_winning_hand,
@@ -44,10 +45,11 @@ from hand_eval import (
 # Tunable weights (Part 5 - AI training - can adjust these)
 # --------------------------------------------------------------------------
 DEFAULT_WEIGHTS = {
-    "shanten": 100.0,    # each step closer to ready is worth a lot
-    "ukeire": 3.0,       # each extra useful unseen tile
-    "structure": 0.5,    # hand_eval's shape score (tie-breaker)
-    "danger": 150.0,     # penalty for risky discards when defending
+    "shanten": 100.0,          # each step closer to ready is worth a lot
+    "ukeire": 3.0,             # each extra useful unseen tile
+    "structure": 0.5,          # hand_eval's shape score (tie-breaker)
+    "danger": 150.0,           # penalty for risky discards when defending
+    "draw_probability": 250.0, # high chance a tile appears again in the unseen wall = keep it, not discard it
     "honor_pong_bonus": 15.0,  # dragons are worth points, pong them more readily
 }
 
@@ -158,6 +160,26 @@ def unseen_counts(hand, visible_tiles):
     seen = Counter(hand)
     seen.update(visible_tiles)
     return {t: max(0, 4 - seen[t]) for t in ALL_TILE_TYPES}
+
+
+def tile_draw_probability(tile, hand, visible_tiles):
+    """
+    Public-information estimate for how likely this tile is to appear again
+    from the unseen wall.
+
+    Assumes only 4 copies exist of each tile, and we can observe all discards
+    plus each player's exposed melds. We do not see other players' concealed
+    tiles, so this is a conservative approximation for decision support.
+    """
+    public_seen = Counter(visible_tiles).get(tile, 0)
+    in_hand = Counter(hand).get(tile, 0)
+    copies_left = max(0, 4 - public_seen - in_hand)
+
+    # 136 total tiles in a standard set. Remove all known public tiles and all
+    # tiles currently in our hand. The remainder is the pool from which unseen
+    # tiles may still be drawn.
+    unseen_pool = max(1, 136 - len(visible_tiles) - len(hand))
+    return min(1.0, copies_left / unseen_pool)
 
 
 def ukeire(hand, melds, visible_tiles, current_shanten=None):
@@ -283,6 +305,7 @@ class StrategyEngine:
             uk, improving = ukeire(remaining, melds, visible_tiles, s)
             structure = hand_structure_score(remaining)
             danger = self.danger_fn(tile, hand, visible_tiles)
+            draw_prob = tile_draw_probability(tile, hand, visible_tiles)
 
             # defend harder when we are far from ready and opponents look close
             defence = threat * min(1.0, max(0, s) / 3.0)
@@ -292,6 +315,7 @@ class StrategyEngine:
                 + self.w["ukeire"] * uk
                 + self.w["structure"] * structure
                 - self.w["danger"] * defence * danger
+                - self.w["draw_probability"] * draw_prob * 100.0
             )
             results.append({
                 "tile": tile,
@@ -301,6 +325,7 @@ class StrategyEngine:
                 "improving_tiles": improving,
                 "structure": structure,
                 "danger": danger,
+                "draw_probability": round(draw_prob, 4),
             })
 
         results.sort(key=lambda r: r["score"], reverse=True)
@@ -421,6 +446,23 @@ def collect_visible_tiles(game):
         for meld in player_melds:
             visible.extend(meld)
     return visible
+
+
+def summarize_player_state(game, player_index, engine=None):
+    """Return the combined evaluator + strategy view for a player's hand."""
+    engine = engine or _engine
+    hand = game.hands[player_index]
+    visible_tiles = collect_visible_tiles(game)
+    analysis = analyze_hand(hand, game.melds[player_index], visible_tiles)
+    discard_tile = engine_choose_discard(game, player_index, engine)
+    return {
+        "hand": list(hand),
+        "melds": list(game.melds[player_index]),
+        "visible_tiles": visible_tiles,
+        "analysis": analysis,
+        "best_discard": discard_tile,
+        "threat": default_threat_level(game.melds, player_index, len(game.wall)),
+    }
 
 
 def engine_choose_discard(game, player_index, engine=None, verbose=False):

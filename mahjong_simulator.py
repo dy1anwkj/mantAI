@@ -1,6 +1,13 @@
 import random
 from collections import Counter
 
+from Decision_Strategy_engine import (
+    StrategyEngine,
+    collect_visible_tiles,
+    engine_choose_discard,
+    engine_should_call,
+    summarize_player_state,
+)
 from hand_eval import analyze_hand, evaluate_discard_quality
 
 # Define Mahjong tiles (Bamboo, Dots, Wan, Winds, Dragons)
@@ -22,6 +29,8 @@ class MahjongGame:
         self.dealer = 0  # Player 1 dealer
         self.current_player = self.dealer
         self.wind_round = 0  # Tracks East, South, West, North rounds
+        self.strategy = StrategyEngine()
+        self.skip_next_draw = False
 
     def deal(self):
         for i, hand in enumerate(self.hands):
@@ -80,22 +89,24 @@ class MahjongGame:
     def get_total_active_tiles(self, player_index):
         return len(self.hands[player_index]) + sum(len(meld) for meld in self.melds[player_index])
 
+    def total_active_tiles(self, player_index):
+        return self.get_total_active_tiles(player_index)
+
+    def reconcile_active_tiles(self, player_index, max_total=13):
+        while self.total_active_tiles(player_index) > max_total:
+            if not self.hands[player_index]:
+                break
+            extra_tile = self.hands[player_index].pop()
+            print(f"Player {player_index + 1} had too many active tiles; removed extra {self.format_tile(extra_tile)} to keep total at {max_total}.")
+
     def expose_meld_from_hand(self, player_index, meld_tiles):
-        before = self.hands[player_index][:]
         for tile in meld_tiles:
             if tile in self.hands[player_index]:
                 self.hands[player_index].remove(tile)
-
-        removed_from_hand = len(before) - len(self.hands[player_index])
-        extra_discarded_tiles = len(meld_tiles) - removed_from_hand
-        for _ in range(max(0, extra_discarded_tiles)):
-            if self.hands[player_index]:
-                self.hands[player_index].pop()
+        self.reconcile_active_tiles(player_index)
 
     def enforce_concealed_hand_limit(self, player_index):
-        while len(self.hands[player_index]) > 13:
-            extra_tile = self.hands[player_index].pop()
-            print(f"Player {player_index + 1} had too many concealed tiles; removed extra {self.format_tile(extra_tile)} to keep hand at 13.")
+        self.reconcile_active_tiles(player_index)
 
     def show_player_state(self, player_index):
         hand = self.sort_tiles(self.hands[player_index])
@@ -238,6 +249,7 @@ class MahjongGame:
         print(f"Player {player_index + 1} calls Pong on {self.format_tile(tile)}")
         print(f"Player {player_index + 1} now has {len(self.hands[player_index])} concealed tiles left after exposing the meld.")
         self.current_player = player_index
+        self.skip_next_draw = True
         return True
 
     def can_chi(self, player_index, tile):
@@ -276,6 +288,7 @@ class MahjongGame:
                 print(f"Player {player_index + 1} calls Chi on {self.format_tile(tile)} with sequence {[self.format_tile(t) for t in seq]}")
                 print(f"Player {player_index + 1} now has {len(self.hands[player_index])} concealed tiles left after exposing the meld.")
                 self.current_player = player_index
+                self.skip_next_draw = True
                 return True
         return False
 
@@ -293,6 +306,7 @@ class MahjongGame:
         print(f"Player {player_index + 1} calls Kong on {self.format_tile(tile)}")
         print(f"Player {player_index + 1} now has {len(self.hands[player_index])} concealed tiles left after exposing the meld.")
         self.current_player = player_index
+        self.skip_next_draw = False
         return True
 
     def can_hu(self, player_index):
@@ -335,13 +349,18 @@ def estimate_discard_win_chance(game, player_index, tile):
 
 def choose_discard_tile(game):
     hand = game.sort_tiles(game.hands[game.current_player])
-    discard_ratings = []
+    state = summarize_player_state(game, game.current_player, game.strategy)
+    analysis = state["analysis"]
+    strategy_choice = state["best_discard"]
 
+    discard_ratings = []
     for tile in hand:
         chance = estimate_discard_win_chance(game, game.current_player, tile)
         discard_ratings.append((tile, chance))
 
     best_tile, best_percentage = max(discard_ratings, key=lambda item: item[1])
+    if strategy_choice is not None and strategy_choice in hand:
+        best_tile = strategy_choice
 
     print("\nYour sorted hand:")
     for i, tile in enumerate(hand, start=1):
@@ -353,21 +372,38 @@ def choose_discard_tile(game):
         for meld in game.melds[game.current_player]:
             print("  -", [game.format_tile(t) for t in game.sort_tiles(meld)])
 
-    print(f"\nBest discard: {game.format_tile(best_tile)} ({best_percentage:.1f}% estimated win chance)")
+    print(f"\nEvaluator summary: score={analysis['strength']['score']:.1f}, waits={len(analysis['waits'])}, useful={[item['tile'] for item in analysis['useful_tiles'][:3]]}")
+    print(f"Strategy recommendation: {game.format_tile(best_tile)}")
+    print(f"Best discard by win estimate: {game.format_tile(best_tile)} ({best_percentage:.1f}% estimated win chance)")
 
     while True:
         try:
-            choice = int(input(f"Player {game.current_player + 1}, choose tile to discard (1-{len(hand)}): "))
+            raw = input(f"Player {game.current_player + 1}, choose tile to discard (1-{len(hand)}): ")
+        except EOFError:
+            print(f"\n[Auto] No input received. Using recommended discard: {game.format_tile(best_tile)}")
+            return best_tile
+
+        try:
+            choice = int(raw)
             if 1 <= choice <= len(hand):
                 chosen_tile = hand[choice - 1]
                 return chosen_tile
         except ValueError:
             pass
+
+        if raw.strip() == '':
+            print(f"\n[Auto] Empty input. Using recommended discard: {game.format_tile(best_tile)}")
+            return best_tile
         print("Invalid choice. Please enter a number corresponding to the tile you want to discard.")
+
 
 def yes_no_prompt(prompt):
     while True:
-        ans = input(prompt + " (y/n): ").strip().lower()
+        try:
+            ans = input(prompt + " (y/n): ").strip().lower()
+        except EOFError:
+            print("\n[Auto] No input received. Defaulting to no.")
+            return False
         if ans in ('y', 'n'):
             return ans == 'y'
         print("Please enter 'y' or 'n'.")
@@ -376,46 +412,16 @@ def ai_choose_discard(game, player_index):
     hand = game.hands[player_index]
     if not hand:
         return None
-
-    visible_tiles = []
-    for discard_pile in game.discards:
-        visible_tiles.extend(discard_pile)
-    for player_melds in game.melds:
-        for meld in player_melds:
-            visible_tiles.extend(meld)
-
-    best_tile = None
-    best_rank = None
-
-    for tile in sorted(set(hand), key=lambda t: (t[0], t[1])):
-        quality = evaluate_discard_quality(
-            hand,
-            tile,
-            exposed_melds=game.melds[player_index],
-            visible_tiles=visible_tiles,
-        )
-
-        rank = (
-            quality["after_score"]
-            + 100 * len(quality["waits_after"])
-            - 25 * len(quality["waits_before"])
-        )
-
-        if best_rank is None or rank > best_rank:
-            best_rank = rank
-            best_tile = tile
-
-    if best_tile is None:
-        return hand[0]
-    return best_tile
+    return engine_choose_discard(game, player_index, game.strategy)
 
 
 def main():
     import time
     game = MahjongGame()
     game.deal()
-    print("\nInitial Hands:")
-    game.show_hands()
+    print("\nInitial public state:")
+    game.show_melds()
+    game.show_discards()
     print("=" * 50)
 
     first_turn = True
@@ -432,9 +438,12 @@ def main():
                 print("  -", [game.format_tile(t) for t in s])
         print("Remaining hand tiles:", [game.format_tile(t) for t in leftover])
 
-        # Handle dealer's first turn: discard without draw
         if first_turn and game.current_player == game.dealer:
             print("Dealer discards first without drawing.")
+            first_turn = False
+        elif game.skip_next_draw:
+            print(f"Player {game.current_player + 1} takes the exposed discard and does not draw a new tile.")
+            game.skip_next_draw = False
         else:
             drawn = game.draw_tile()
             if drawn is None:
@@ -455,28 +464,25 @@ def main():
                 if yes_no_prompt("You can Hu! Declare win?"):
                     print("You declared Hu and won!")
                     break
+            state = summarize_player_state(game, game.current_player, game.strategy)
+            analysis = state["analysis"]
+            print(
+                f"Hand analysis: score={analysis['strength']['score']:.1f}, "
+                f"waits={len(analysis['waits'])}, "
+                f"useful={[item['tile'] for item in analysis['useful_tiles'][:3]]}"
+            )
             discard_tile = choose_discard_tile(game)
         else:
             if game.can_hu(game.current_player):
                 print(f"Player {game.current_player + 1} declares Hu and wins!")
                 break
 
-            visible_tiles = []
-            for discard_pile in game.discards:
-                visible_tiles.extend(discard_pile)
-            for player_melds in game.melds:
-                for meld in player_melds:
-                    visible_tiles.extend(meld)
-
-            hand_analysis = analyze_hand(
-                game.hands[game.current_player],
-                game.melds[game.current_player],
-                visible_tiles,
-            )
+            state = summarize_player_state(game, game.current_player, game.strategy)
+            analysis = state["analysis"]
             print(
-                f"AI analysis: score={hand_analysis['strength']['score']:.1f}, "
-                f"waits={len(hand_analysis['waits'])}, "
-                f"useful={[(tile[0], tile[1]) for tile in [item['tile'] for item in hand_analysis['useful_tiles'][:3]]]}"
+                f"AI analysis: score={analysis['strength']['score']:.1f}, "
+                f"waits={len(analysis['waits'])}, "
+                f"useful={[item['tile'] for item in analysis['useful_tiles'][:3]]}"
             )
 
             discard_tile = ai_choose_discard(game, game.current_player)
@@ -486,6 +492,7 @@ def main():
 
         pong_called = False
         kong_called = False
+        chi_called = False
 
         # Kong calls: AI players auto-decide, human still prompts only for their own turn
         for i in range(1, 4):
@@ -494,7 +501,7 @@ def main():
                 if player == 0:
                     call_kong = yes_no_prompt(f"You can Kong {game.format_tile(discard_tile)}. Call Kong?")
                 else:
-                    call_kong = True
+                    call_kong = engine_should_call(game, player, discard_tile, "kong", engine=game.strategy, verbose=True)
 
                 if call_kong:
                     kong_called = game.perform_kong(player, game.current_player, discard_tile)
@@ -510,7 +517,7 @@ def main():
                     if player == 0:
                         call_pong = yes_no_prompt(f"You can Pong {game.format_tile(discard_tile)}. Call Pong?")
                     else:
-                        call_pong = True
+                        call_pong = engine_should_call(game, player, discard_tile, "pong", engine=game.strategy, verbose=True)
 
                     if call_pong:
                         pong_called = game.perform_pong(player, game.current_player, discard_tile)
@@ -518,26 +525,30 @@ def main():
                             print(f"Pong called by Player {player + 1}, turn goes to them.")
                             break
 
-        # Chi calls if no Kong or Pong, only next player
+        # Chi calls if no Kong or Pong, only next player on the left
         if not kong_called and not pong_called:
             next_player = (game.current_player + 1) % 4
             if game.can_chi(next_player, discard_tile):
                 if next_player == 0:
                     call_chi = yes_no_prompt(f"You can Chi {game.format_tile(discard_tile)}. Call Chi?")
                 else:
-                    call_chi = True
+                    call_chi = engine_should_call(game, next_player, discard_tile, "chi", engine=game.strategy, verbose=True)
 
                 if call_chi:
                     chi_called = game.perform_chi(next_player, game.current_player, discard_tile)
                     if chi_called:
                         print(f"Chi called by Player {next_player + 1}, turn goes to them.")
 
-        game.show_hands()
+        if not kong_called and not pong_called and not chi_called:
+            game.current_player = (game.current_player + 1) % 4
+
+        # Keep each player's total active tiles at 13 after every full turn:
+        # concealed hand + shown melds, with the dealer starting at 14 and dropping to 13 on his first discard.
+        if game.current_player != game.dealer or not first_turn:
+            game.reconcile_active_tiles(game.current_player)
+
         game.show_discards()
         game.show_melds()
-
-        if first_turn:
-            first_turn = False
 
         time.sleep(1)
 
