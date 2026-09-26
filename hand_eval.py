@@ -1,3 +1,15 @@
+"""Pure Mahjong hand evaluation utilities.
+
+This module is intentionally limited to analysis only:
+- inspect a player's current hand and exposed melds
+- estimate how close the hand is to winning
+- highlight useful tiles, dead tiles, and improvement paths
+- score discard options for downstream AI decision logic
+
+It does not manage the game loop, turns, draws, discards, or player actions.
+That belongs in the simulator layer.
+"""
+
 from collections import Counter
 from functools import lru_cache
 
@@ -330,25 +342,3 @@ def analyze_hand(hand, exposed_melds=None, visible_tiles=None):
     }
 
 
-if __name__ == "__main__":
-    sample_hand = [
-        ("bamboo", 1), ("bamboo", 2), ("bamboo", 3),
-        ("dot", 4), ("dot", 5), ("dot", 6),
-        ("wan", 5), ("wan", 6), ("wan", 7),
-        ("wan", 2), ("wan", 3),
-        ("dragon", "red"), ("dragon", "red"),
-    ]
-
-    result = analyze_hand(sample_hand)
-    print("Hand analysis:")
-    print("- strength score:", result["strength"]["score"])
-    print("- winning wait tiles:", [format_tile(t) for t in result["waits"]])
-    print("- top useful tiles:")
-    for item in result["useful_tiles"][:5]:
-        print("  *", format_tile(item["tile"]), "->", round(item["usefulness"], 2))
-    print("- top improvement tiles:")
-    for item in result["improvements"][:5]:
-        print("  *", format_tile(item["tile"]), "-> score", round(item["score"], 2))
-
-    discard_result = evaluate_discard_quality(sample_hand, ("dragon", "red"))
-    print("- discard quality:", discard_result)
