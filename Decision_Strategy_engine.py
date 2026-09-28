@@ -31,15 +31,46 @@ from collections import Counter
 from dataclasses import dataclass, field
 from functools import lru_cache
 
-from hand_eval import (
-    ALL_TILE_TYPES,
-    NUMBER_SUITS,
-    analyze_hand,
-    format_tile,
-    hand_structure_score,
-    is_winning_hand,
-    tile_sort_key,
-)
+try:
+    from hand_eval import (  # pyright: ignore[reportMissingImports]
+        ALL_TILE_TYPES,
+        NUMBER_SUITS,
+        analyze_hand,
+        format_tile,
+        hand_structure_score,
+        is_winning_hand,
+        tile_sort_key,
+    )
+except ImportError:  # pragma: no cover - fallback for environments without hand_eval
+    ALL_TILE_TYPES = [
+        ("bamboo", 1), ("bamboo", 2), ("bamboo", 3), ("bamboo", 4), ("bamboo", 5), ("bamboo", 6), ("bamboo", 7), ("bamboo", 8), ("bamboo", 9),
+        ("dot", 1), ("dot", 2), ("dot", 3), ("dot", 4), ("dot", 5), ("dot", 6), ("dot", 7), ("dot", 8), ("dot", 9),
+        ("wan", 1), ("wan", 2), ("wan", 3), ("wan", 4), ("wan", 5), ("wan", 6), ("wan", 7), ("wan", 8), ("wan", 9),
+        ("wind", "east"), ("wind", "south"), ("wind", "west"), ("wind", "north"),
+        ("dragon", "red"), ("dragon", "green"), ("dragon", "white"),
+    ]
+    NUMBER_SUITS = ("bamboo", "dot", "wan")
+
+    def format_tile(tile):
+        suit, value = tile
+        if suit in {"wind", "dragon"}:
+            return f"{value}"
+        return f"{suit[0]}{value}"
+
+    def tile_sort_key(tile):
+        suit, value = tile
+        suit_order = {"bamboo": 0, "dot": 1, "wan": 2, "wind": 3, "dragon": 4}
+        value_order = {"east": 0, "south": 1, "west": 2, "north": 3, "red": 0, "green": 1, "white": 2}
+        return (suit_order.get(suit, 5), value if isinstance(value, int) else value_order.get(value, 0))
+
+    def analyze_hand(hand, melds=None, visible_tiles=None):
+        return {"ok": False, "tiles": list(hand), "melds": list(melds or []), "visible_tiles": list(visible_tiles or [])}
+
+    def hand_structure_score(hand):
+        return 0.0
+
+    def is_winning_hand(hand, melds=None):
+        return False
 
 # --------------------------------------------------------------------------
 # Tunable weights (Part 5 - AI training - can adjust these)
@@ -71,36 +102,41 @@ def to_counts(tiles):
 # --------------------------------------------------------------------------
 # Shanten calculation
 # --------------------------------------------------------------------------
-@lru_cache(maxsize=200_000)
-def _shanten_from_counts(counts, exposed_melds):
+def _prune_dominated(options):
+    """Keep only (sets, partials) pairs that no other pair beats in both."""
+    return tuple(sorted(
+        (a, b) for a, b in options
+        if not any(c >= a and d >= b and (c, d) != (a, b) for c, d in options)
+    ))
+
+
+@lru_cache(maxsize=None)
+def _group_options(group, suited):
     """
-    Standard-hand shanten (4 sets + 1 pair).
-    exposed_melds = number of melds already shown (pong/chi/kong).
+    Every useful way to split one suit (or the honours) into complete sets and
+    partial sets. Suits never combine with each other, so this is searched per
+    suit and cached, then the suits are combined in _shanten_from_counts.
+    Returns (options without the pair, options using this group's pair).
     """
-    counts = list(counts)
-    best = [8]
+    counts = list(group)
+    n = len(counts)
+    found = (set(), set())
 
     def dfs(i, sets, partials, has_pair):
-        while i < NUM_TYPES and counts[i] == 0:
+        while i < n and counts[i] == 0:
             i += 1
-        if i >= NUM_TYPES:
-            usable_partials = max(0, min(partials, 4 - sets))
-            s = 8 - 2 * sets - usable_partials - (1 if has_pair else 0)
-            s = max(s, -1)  # never below "winning", even for oversized hands
-            if s < best[0]:
-                best[0] = s
+        if i >= n:
+            found[has_pair].add((sets, partials))
             return
 
         c = counts[i]
-        suited = i < 27
-        pos = i % 9  # 0..8 inside a suit
 
         # complete sets
         if c >= 3:
             counts[i] -= 3
             dfs(i, sets + 1, partials, has_pair)
             counts[i] += 3
-        if suited and pos <= 6 and counts[i + 1] and counts[i + 2]:
+        if suited and i <= 6 and counts[i + 1] and counts[i + 2]:
             counts[i] -= 1; counts[i + 1] -= 1; counts[i + 2] -= 1
             dfs(i, sets + 1, partials, has_pair)
             counts[i] += 1; counts[i + 1] += 1; counts[i + 2] += 1
@@ -114,11 +150,11 @@ def _shanten_from_counts(counts, exposed_melds):
             counts[i] += 2
 
         # partial sequences: 4-5 (open/edge) and 4-6 (middle gap)
-        if suited and pos <= 7 and counts[i + 1]:
+        if suited and i <= 7 and counts[i + 1]:
             counts[i] -= 1; counts[i + 1] -= 1
             dfs(i, sets, partials + 1, has_pair)
             counts[i] += 1; counts[i + 1] += 1
-        if suited and pos <= 6 and counts[i + 2]:
+        if suited and i <= 6 and counts[i + 2]:
             counts[i] -= 1; counts[i + 2] -= 1
             dfs(i, sets, partials + 1, has_pair)
             counts[i] += 1; counts[i + 2] += 1
@@ -129,8 +165,43 @@ def _shanten_from_counts(counts, exposed_melds):
         dfs(i + 1, sets, partials, has_pair)
         counts[i] = saved
 
-    dfs(0, exposed_melds, 0, False)
-    return best[0]
+    dfs(0, 0, 0, False)
+    return _prune_dominated(found[False]), _prune_dominated(found[True])
+
+
+@lru_cache(maxsize=200_000)
+def _shanten_from_counts(counts, exposed_melds):
+    """
+    Standard-hand shanten (4 sets + 1 pair).
+    exposed_melds = number of melds already shown (pong/chi/kong).
+    """
+    groups = [
+        _group_options(counts[0:9], True),
+        _group_options(counts[9:18], True),
+        _group_options(counts[18:27], True),
+        _group_options(counts[27:34], False),
+    ]
+
+    # Combine groups, tracking whether the single pair has been used yet.
+    # states: {(sets, partials, has_pair)}
+    states = {(exposed_melds, 0, 0)}
+    for no_pair, with_pair in groups:
+        nxt = set()
+        for sets, partials, has_pair in states:
+            for a, b in no_pair:
+                nxt.add((sets + a, partials + b, has_pair))
+            if not has_pair:
+                for a, b in with_pair:
+                    nxt.add((sets + a, partials + b, 1))
+        states = nxt
+
+    best = 8
+    for sets, partials, has_pair in states:
+        usable_partials = max(0, min(partials, 4 - sets))
+        s = max(8 - 2 * sets - usable_partials - has_pair, -1)
+        if s < best:
+            best = s
+    return best
 
 
 def shanten(hand, melds=None):

@@ -24,9 +24,10 @@ ALL_TILE_TYPES = (
     + [("wind", w) for w in WINDS]
     + [("dragon", d) for d in DRAGONS]
 )
+ALL_TILE_SET = frozenset(ALL_TILE_TYPES)
 
 
-def tile_sort_key(tile):
+def _compute_sort_key(tile):
     suit, value = tile
     suit_order = {
         "bamboo": 0,
@@ -48,6 +49,14 @@ def tile_sort_key(tile):
     return suit_order.get(suit, 99), value_order
 
 
+_SORT_KEYS = {tile: _compute_sort_key(tile) for tile in ALL_TILE_TYPES}
+
+
+def tile_sort_key(tile):
+    key = _SORT_KEYS.get(tile)
+    return key if key is not None else _compute_sort_key(tile)
+
+
 def format_tile(tile):
     suit, value = tile
     if suit == "bamboo":
@@ -62,7 +71,7 @@ def format_tile(tile):
 def validate_hand(hand):
     counts = Counter(hand)
     for tile, count in counts.items():
-        if tile not in ALL_TILE_TYPES:
+        if tile not in ALL_TILE_SET:
             return False, f"Invalid tile: {tile}"
         if count > 4:
             return False, f"Too many copies of {format_tile(tile)}: {count}"
@@ -97,19 +106,23 @@ def _normalise_hand(hand):
 
 @lru_cache(maxsize=None)
 def _can_form_sets_cached(hand_tuple, sets_needed):
-    hand = list(hand_tuple)
-    if sets_needed == 0:
-        return len(hand) == 0
-    if len(hand) != sets_needed * 3:
+    """Exact recursive partition check: can this sorted hand be split into
+    `sets_needed` valid melds without ignoring any tiles?
+
+    Only the lowest tile needs to be tried: in any valid split it must start
+    either a triplet or a sequence, since nothing lower can precede it."""
+    if sets_needed < 0:
         return False
+    if sets_needed == 0:
+        return len(hand_tuple) == 0
+    if len(hand_tuple) != sets_needed * 3:
+        return False
+
+    hand = list(hand_tuple)
     first = hand[0]
 
     if hand.count(first) >= 3:
-        temp_hand = hand.copy()
-        temp_hand.remove(first)
-        temp_hand.remove(first)
-        temp_hand.remove(first)
-        if _can_form_sets_cached(_normalise_hand(temp_hand), sets_needed - 1):
+        if _can_form_sets_cached(tuple(hand[3:]), sets_needed - 1):
             return True
 
     suit, rank = first
@@ -117,11 +130,11 @@ def _can_form_sets_cached(hand_tuple, sets_needed):
         second = (suit, rank + 1)
         third = (suit, rank + 2)
         if second in hand and third in hand:
-            temp_hand = hand.copy()
-            temp_hand.remove(first)
-            temp_hand.remove(second)
-            temp_hand.remove(third)
-            if _can_form_sets_cached(_normalise_hand(temp_hand), sets_needed - 1):
+            hand.remove(first)
+            hand.remove(second)
+            hand.remove(third)
+            # Removing tiles from a sorted list keeps it sorted.
+            if _can_form_sets_cached(tuple(hand), sets_needed - 1):
                 return True
     return False
 
@@ -130,9 +143,6 @@ def is_winning_hand(hand, exposed_melds=None):
     if exposed_melds is None:
         exposed_melds = []
 
-    valid, reason = validate_hand(hand)
-    if not valid:
-        return False
     if len(exposed_melds) > 4:
         return False
 
@@ -141,13 +151,20 @@ def is_winning_hand(hand, exposed_melds=None):
     if len(hand) != required_concealed_tiles:
         return False
 
+    valid, reason = validate_hand(hand)
+    if not valid:
+        return False
+    return _is_winning_cached(_normalise_hand(hand), sets_needed)
+
+
+@lru_cache(maxsize=None)
+def _is_winning_cached(hand, sets_needed):
     counts = Counter(hand)
-    for pair_tile, count in counts.items():
-        if count < 2:
-            continue
+    pair_candidates = [pair_tile for pair_tile, count in counts.items() if count >= 2]
+    for pair_tile in pair_candidates:
         remaining = list(hand)
-        remaining.remove(pair_tile)
-        remaining.remove(pair_tile)
+        for _ in range(2):
+            remaining.remove(pair_tile)
         if _can_form_sets_cached(_normalise_hand(remaining), sets_needed):
             return True
     return False
@@ -157,15 +174,23 @@ def winning_tiles(hand, exposed_melds=None):
     if exposed_melds is None:
         exposed_melds = []
 
-    waits = []
+    return list(_winning_tiles_cached(_normalise_hand(hand), len(exposed_melds)))
+
+
+@lru_cache(maxsize=None)
+def _winning_tiles_cached(hand, meld_count):
+    # Only a hand one tile short of complete can be waiting on anything.
+    if meld_count > 4 or len(hand) != (4 - meld_count) * 3 + 1:
+        return ()
+    placeholder_melds = [None] * meld_count
     counts = Counter(hand)
+    waits = []
     for tile in ALL_TILE_TYPES:
         if counts[tile] >= 4:
             continue
-        test_hand = list(hand) + [tile]
-        if is_winning_hand(test_hand, exposed_melds):
+        if is_winning_hand(list(hand) + [tile], placeholder_melds):
             waits.append(tile)
-    return sorted(waits, key=tile_sort_key)
+    return tuple(waits)
 
 
 def hand_structure_score(hand):
@@ -286,8 +311,9 @@ def improvement_candidates(hand, exposed_melds=None):
         exposed_melds = []
 
     candidates = []
+    counts = Counter(hand)
     for tile in ALL_TILE_TYPES:
-        if Counter(hand)[tile] >= 4:
+        if counts[tile] >= 4:
             continue
         score = evaluate_hand_strength(list(hand) + [tile], exposed_melds)["score"]
         candidates.append({"tile": tile, "score": score})
@@ -304,7 +330,8 @@ def evaluate_discard_quality(hand, discard, exposed_melds=None, visible_tiles=No
         raise ValueError(f"Discard {format_tile(discard)} is not in the current hand.")
 
     before = evaluate_hand_strength(hand, exposed_melds)
-    remaining = [tile for tile in hand if tile != discard]
+    remaining = list(hand)
+    remaining.remove(discard)
     after = evaluate_hand_strength(remaining, exposed_melds)
 
     return {
