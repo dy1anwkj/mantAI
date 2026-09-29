@@ -271,35 +271,41 @@ def evaluate_hand_strength(hand, exposed_melds=None):
 
 
 def useful_tiles(hand, exposed_melds=None, visible_tiles=None):
+    """Rank the tiles in the hand by how much they help it.
+
+    Shape is judged from the player's own concealed tiles only. Copies that
+    are already exposed in melds or discarded can never be drawn, so a pair
+    whose other copies are all visible loses its value as a future pong."""
     if exposed_melds is None:
         exposed_melds = []
     if visible_tiles is None:
         visible_tiles = []
 
-    counts = Counter(hand)
+    own = Counter(hand)
+    seen = Counter(visible_tiles)
     for meld in exposed_melds:
-        counts.update(meld)
-    counts.update(visible_tiles)
+        seen.update(meld)
 
     ranked = []
     for tile in sorted(set(hand), key=tile_sort_key):
         suit, rank = tile
+        count = own[tile]
+        live = max(0, 4 - count - seen[tile])
         value = 0.0
 
-        if counts[tile] >= 3:
+        if count >= 3:
             value += 6.0
-        elif counts[tile] == 2:
-            value += 3.0
+        elif count == 2:
+            # Still usable as the pair; only a live copy can make it a pong.
+            value += 3.0 if live else 1.5
 
         if suit in NUMBER_SUITS:
             for diff in (-1, 1, -2, 2):
                 neighbor = (suit, rank + diff)
-                if neighbor in counts:
+                if neighbor in own:
                     value += 2.0 if abs(diff) == 1 else 1.0
-
-        if suit not in NUMBER_SUITS:
-            if counts[tile] >= 2:
-                value += 3.0
+        elif count == 2 and live:
+            value += 3.0
 
         ranked.append({"tile": tile, "usefulness": value})
 
