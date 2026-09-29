@@ -3,13 +3,13 @@
 Danger and opponent threat are heuristic estimates, not knowledge of hidden
 hands or calibrated win probabilities. The simulator does not enforce Riichi
 furiten, so previous discards do not guarantee safety. Tile values use the
-tuple format from ``hand_eval`` and the simulator.
+tuple format from ``D_hand_eval`` and the simulator.
 """
 
 from collections import Counter
 import random
 
-from hand_eval import ALL_TILE_TYPES, NUMBER_SUITS, is_sequence, is_triplet
+from D_hand_eval import ALL_TILE_TYPES, NUMBER_SUITS, is_sequence, is_triplet
 from singapore_rules import BONUS_TILES
 
 

@@ -29,7 +29,7 @@ except (ImportError, ModuleNotFoundError):
         return {}
 
 try:
-    hand_eval_mod = importlib.import_module("hand_eval")
+    hand_eval_mod = importlib.import_module("D_hand_eval")
     analyze_hand = hand_eval_mod.analyze_hand
     evaluate_discard_quality = hand_eval_mod.evaluate_discard_quality
     is_winning_hand = hand_eval_mod.is_winning_hand

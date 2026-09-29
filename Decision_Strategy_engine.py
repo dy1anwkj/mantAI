@@ -18,7 +18,7 @@ How it thinks
 Discard score = attack value (low shanten, high ukeire, good shape)
                 - defence penalty (danger x how threatening opponents are)
 
-Tiles use the same format as the simulator / hand_eval:
+Tiles use the same format as the simulator / D_hand_eval:
     ('bamboo', 5), ('dot', 1), ('wan', 9), ('wind', 'east'), ('dragon', 'red')
 
 Quick use with the simulator:
@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 
 try:
-    from hand_eval import (  # pyright: ignore[reportMissingImports]
+    from D_hand_eval import (  # pyright: ignore[reportMissingImports]
         ALL_TILE_TYPES,
         NUMBER_SUITS,
         analyze_hand,
@@ -41,7 +41,7 @@ try:
         is_winning_hand,
         tile_sort_key,
     )
-except ImportError:  # pragma: no cover - fallback for environments without hand_eval
+except ImportError:  # pragma: no cover - fallback for environments without D_hand_eval
     ALL_TILE_TYPES = [
         ("bamboo", 1), ("bamboo", 2), ("bamboo", 3), ("bamboo", 4), ("bamboo", 5), ("bamboo", 6), ("bamboo", 7), ("bamboo", 8), ("bamboo", 9),
         ("dot", 1), ("dot", 2), ("dot", 3), ("dot", 4), ("dot", 5), ("dot", 6), ("dot", 7), ("dot", 8), ("dot", 9),
@@ -78,14 +78,14 @@ except ImportError:  # pragma: no cover - fallback for environments without hand
 DEFAULT_WEIGHTS = {
     "shanten": 100.0,          # each step closer to ready is worth a lot
     "ukeire": 3.0,             # each extra useful unseen tile
-    "structure": 0.5,          # hand_eval's shape score (tie-breaker)
+    "structure": 0.5,          # D_hand_eval's shape score (tie-breaker)
     "danger": 150.0,           # penalty for risky discards when defending
     "draw_probability": 250.0, # high chance a tile appears again in the unseen wall = keep it, not discard it
     "honor_pong_bonus": 15.0,  # dragons are worth points, pong them more readily
 }
 
 # --------------------------------------------------------------------------
-# Tile <-> index helpers (34 tile types, same order as hand_eval)
+# Tile <-> index helpers (34 tile types, same order as D_hand_eval)
 # --------------------------------------------------------------------------
 TILE_INDEX = {tile: i for i, tile in enumerate(ALL_TILE_TYPES)}
 NUM_TYPES = len(ALL_TILE_TYPES)  # 34

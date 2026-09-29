@@ -14,7 +14,7 @@
 
 from collections import Counter
 
-from hand_eval import NUMBER_SUITS, WINDS, _normalise_hand, tile_sort_key
+from D_hand_eval import NUMBER_SUITS, WINDS, _normalise_hand, tile_sort_key
 
 FLOWERS = [('flower', n) for n in range(1, 5)]   # red set, numbered 1-4
 SEASONS = [('season', n) for n in range(1, 5)]   # blue set, numbered 1-4

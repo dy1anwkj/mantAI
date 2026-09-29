@@ -1,4 +1,4 @@
-from hand_eval import is_winning_hand
+from D_hand_eval import is_winning_hand
 from Decision_Strategy_engine import StrategyEngine
 
 
@@ -47,7 +47,7 @@ import pytest
 
 import mahjong_simulator as sim
 import singapore_rules as sg
-from hand_eval import ALL_TILE_TYPES, evaluate_discard_quality, winning_tiles
+from D_hand_eval import ALL_TILE_TYPES, evaluate_discard_quality, winning_tiles
 
 
 def B(*ranks):
