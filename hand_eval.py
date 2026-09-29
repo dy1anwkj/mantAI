@@ -1,4 +1,4 @@
-github"""Pure Mahjong hand evaluation utilities.
+"""Pure Mahjong hand evaluation utilities.
 
 This module is intentionally limited to analysis only:
 - inspect a player's current hand and exposed melds
@@ -367,5 +367,4 @@ def analyze_hand(hand, exposed_melds=None, visible_tiles=None):
         "improvements": improvements,
         "is_winning": is_winning_hand(hand, exposed_melds),
     }
-
 
