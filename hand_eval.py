@@ -368,3 +368,4 @@ def analyze_hand(hand, exposed_melds=None, visible_tiles=None):
         "is_winning": is_winning_hand(hand, exposed_melds),
     }
 
+
