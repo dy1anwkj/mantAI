@@ -10,10 +10,12 @@ from collections import Counter
 import random
 
 from hand_eval import ALL_TILE_TYPES, NUMBER_SUITS, is_sequence, is_triplet
+from singapore_rules import BONUS_TILES
 
 
 COPIES_PER_TILE = 4
 _VALID_TILES = set(ALL_TILE_TYPES)
+_BONUS_TILES = set(BONUS_TILES)
 
 
 class OpponentAnalyzer:
@@ -31,6 +33,7 @@ class OpponentAnalyzer:
 		self.melds = [[] for _ in range(player_count)]
 		self.own_hand = []
 		self.wall_remaining = None
+		self.bonus = None
 
 	def update_from_game(self, game, player_index=None):
 		"""Refresh from a simulator with ``hands``, ``discards``, ``melds`` and ``wall``."""
@@ -51,11 +54,38 @@ class OpponentAnalyzer:
 				self._check_meld(meld)
 		self._check_tiles(own_hand)
 		wall_remaining = len(game.wall)
+		bonus = self._copy_bonus(getattr(game, "bonus", None))
 		self.player_index = seat
 		self.discards = discards
 		self.melds = melds
 		self.own_hand = own_hand
 		self.wall_remaining = wall_remaining
+		self.bonus = bonus
+		return self
+
+	def update_from_state(self, state):
+		"""Refresh from a public GameState without accessing opponents' hands."""
+		self._check_player(state.player)
+		if len(state.discards) != self.player_count or len(state.melds) != self.player_count:
+			raise ValueError("state player count does not match this analyzer")
+		if type(state.wall_remaining) is not int or state.wall_remaining < 0:
+			raise ValueError("wall_remaining must be a nonnegative integer")
+		discards = [list(pile) for pile in state.discards]
+		melds = [[list(meld) for meld in player] for player in state.melds]
+		own_hand = list(state.hand)
+		for pile in discards:
+			self._check_tiles(pile)
+		for player_melds in melds:
+			for meld in player_melds:
+				self._check_meld(meld)
+		self._check_tiles(own_hand)
+		bonus = self._copy_bonus(getattr(state, "bonus", None))
+		self.player_index = state.player
+		self.discards = discards
+		self.melds = melds
+		self.own_hand = own_hand
+		self.wall_remaining = state.wall_remaining
+		self.bonus = bonus
 		return self
 
 	def record_discard(self, player_index, tile):
@@ -86,21 +116,25 @@ class OpponentAnalyzer:
 
 	@property
 	def visible_tiles(self):
-		"""All public discards and exposed meld tiles."""
+		"""All public discards, exposed melds, and revealed bonus tiles."""
 		tiles = [tile for pile in self.discards for tile in pile]
 		tiles.extend(tile for player_melds in self.melds for meld in player_melds for tile in meld)
+		if self.bonus is not None:
+			tiles.extend(tile for pile in self.bonus for tile in pile)
 		return tiles
 
 	def remaining_counts(self, hand=None, visible_tiles=None):
 		"""Return unseen copies by tile, excluding public tiles and our hand.
 
 		These counts include tiles in opponents' concealed hands; they are not
-		counts of tiles remaining in the wall.
+		counts of tiles remaining in the wall. Only standard hand tiles are
+		returned; revealed bonus tiles are accepted but do not reduce them.
 		"""
 		known_hand = self.own_hand if hand is None else list(hand)
 		self._check_tiles(known_hand)
 		known_visible = self.visible_tiles if visible_tiles is None else list(visible_tiles)
-		self._check_tiles(known_visible)
+		for tile in known_visible:
+			self._check_tile(tile, allow_bonus=True)
 		seen = Counter(known_visible)
 		seen.update(known_hand)
 		return {tile: max(0, COPIES_PER_TILE - seen[tile]) for tile in ALL_TILE_TYPES}
@@ -110,7 +144,12 @@ class OpponentAnalyzer:
 		return self.remaining_counts(hand, visible_tiles)[tile]
 
 	def sample_wall(self, rng=None):
-		"""Sample a possible wall using public unseen tiles, without replacement."""
+		"""Sample a possible physical wall, including unrevealed bonus tiles.
+
+		Refresh after bonus replacements finish. Unrevealed bonus tiles must
+		be in the wall because players cannot keep them in concealed hands.
+		Without bonus data, use the standard 136-tile model.
+		"""
 		if self.wall_remaining is None:
 			return []
 		rng = rng or random
@@ -119,7 +158,15 @@ class OpponentAnalyzer:
 			for tile, count in self.remaining_counts().items()
 			for _ in range(count)
 		]
-		return rng.sample(pool, min(self.wall_remaining, len(pool)))
+		bonus = [] if self.bonus is None else [
+			tile for tile in BONUS_TILES if tile not in self.visible_tiles
+		]
+		standard_count = self.wall_remaining - len(bonus)
+		if not 0 <= standard_count <= len(pool):
+			raise ValueError("wall size is inconsistent with the known tiles")
+		wall = rng.sample(pool, standard_count) + bonus
+		rng.shuffle(wall)
+		return wall
 
 	def opponent_threat(self, opponent_index):
 		"""Estimate readiness from exposed melds and discard count (0.0 to 1.0)."""
@@ -239,13 +286,28 @@ class OpponentAnalyzer:
 			raise ValueError("player_index is outside the table")
 
 	@staticmethod
-	def _check_tile(tile):
+	def _check_tile(tile, allow_bonus=False):
 		if (not isinstance(tile, tuple) or len(tile) != 2
 		    or type(tile[0]) is not str
-		    or (type(tile[1]) is not int if tile[0] in NUMBER_SUITS
+		    or (type(tile[1]) is not int if tile[0] in (*NUMBER_SUITS, "flower", "season")
 		        else type(tile[1]) is not str)
-		    or tile not in _VALID_TILES):
+		    or (tile not in _VALID_TILES and not (allow_bonus and tile in _BONUS_TILES))):
 			raise ValueError(f"invalid Mahjong tile: {tile!r}")
+
+	def _copy_bonus(self, bonus):
+		if bonus is None:
+			return None
+		if len(bonus) != self.player_count:
+			raise ValueError("bonus player count does not match this analyzer")
+		copied = [list(pile) for pile in bonus]
+		seen = set()
+		for pile in copied:
+			for tile in pile:
+				self._check_tile(tile, allow_bonus=True)
+				if tile not in _BONUS_TILES or tile in seen:
+					raise ValueError("bonus tiles must be distinct flowers, seasons, or animals")
+				seen.add(tile)
+		return copied
 
 	def _check_tiles(self, tiles):
 		for tile in tiles:
