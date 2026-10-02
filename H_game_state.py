@@ -18,6 +18,11 @@ class GameState:
     prevailing_wind: str
     seat: int
     current_player: int
+    # The decision this observation is for (see mahjong_simulator.GameSession):
+    # "turn", "claim" or "rob_kong", the tile on offer and who offered it.
+    decision: str = None
+    pending_tile: tuple = None
+    pending_from: int = None
 
     @property
     def visible_tiles(self):
@@ -44,7 +49,7 @@ class GameState:
         ) + self.unseen_counts + (self.wall_remaining, self.seat, self.dealer, self.current_player)
 
 
-def observe(game, player):
+def observe(game, player, decision=None, pending_tile=None, pending_from=None):
     if player not in range(4):
         raise ValueError('player must be 0, 1, 2, or 3')
     return GameState(
@@ -55,4 +60,5 @@ def observe(game, player):
         tuple(tuple(b) for b in game.bonus),
         len(game.wall), game.dealer, game.prevailing_wind,
         game.seat(player), game.current_player,
+        decision, pending_tile, pending_from,
     )

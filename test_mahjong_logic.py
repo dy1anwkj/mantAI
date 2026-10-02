@@ -686,11 +686,41 @@ def test_promoted_kong_can_be_robbed(monkeypatch):
 def test_engine_player_one_simulation_runs_cleanly():
     # check=True asserts tile conservation and hand sizes after every discard
     # and validates every win (complete hand, minimum tai, shooter recorded).
-    stats = sim.simulate(40, seed=11, check=True, progress=False)
+    stats = sim.simulate(40, seed=11, check=True, progress=False, opponents="random")
     assert stats["errors"] == []
     finished = stats["p1_wins"] + sum(stats["other_wins"].values()) + stats["draws"]
     assert finished == 40
     assert stats["p1_wins"] > 20
+
+
+def test_engine_opponents_call_and_win_with_tai(monkeypatch):
+    calls = Counter()
+    for kind in ("pong", "chi", "kong"):
+        original = getattr(sim.MahjongGame, f"perform_{kind}")
+
+        def counting(self, player, *args, _kind=kind, _original=original, **kwargs):
+            done = _original(self, player, *args, **kwargs)
+            if player != 0 and done:
+                calls[_kind] += 1
+            return done
+
+        monkeypatch.setattr(sim.MahjongGame, f"perform_{kind}", counting)
+    stats = sim.simulate(40, seed=5, check=True, progress=False)
+    assert stats["errors"] == []
+    assert sum(stats["other_wins"].values()) >= 15     # opponents win their share
+    assert calls["pong"] > 0 and calls["chi"] > 0      # and call like real players
+
+
+def test_opponents_get_a_style_and_their_own_engine():
+    game = sim.MahjongGame()
+    assert set(game.styles) == {1, 2, 3}
+    assert all(s in sim.OPPONENT_STYLES for s in game.styles.values())
+    assert sim.opponent_engine(game, 0) is None
+    assert sim.opponent_engine(game, 2) is game.opponent_engines[2]
+    assert sim.controller_name(game, 2) == "engine"
+    game.opponents = "random"
+    assert sim.opponent_engine(game, 2) is None
+    assert sim.controller_name(game, 2) == "random"
 
 
 # --------------------------------------------------------------------------
