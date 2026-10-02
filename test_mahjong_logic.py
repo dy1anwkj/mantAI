@@ -605,3 +605,296 @@ def test_sorted_hand_shows_no_percentages(monkeypatch):
         sim.choose_discard_tile(game)
     hand_lines = out.getvalue().split("Your sorted hand:")[1].split("\n\n")[0]
     assert "%" not in hand_lines
+
+
+# --------------------------------------------------------------------------
+# Engine <-> simulator sync: tai-aware engine, own-turn Kongs, batch games
+# --------------------------------------------------------------------------
+import Decision_Strategy_engine as de
+
+READY = B(1, 2, 3) + D(4, 5, 6) + W(7, 8, 9) + W(2, 2, 2) + D(9)
+
+
+def test_engine_discard_follows_hand_shape():
+    # Throwing the lone North leaves a two-sided wait; the old draw-probability
+    # weight (x25000) swamped shanten and could break the hand instead.
+    engine = StrategyEngine()
+    ctx = de.TaiContext(bonus=[('animal', 'cat')], seat=2, prevailing='east')
+    hand = B(1, 2, 3) + D(4, 5, 6) + W(7, 8, 9) + W(2, 2) + D(5, 6) + [('wind', 'north')]
+    decision = engine.choose_discard(hand, [], [], 0.0, ctx)
+    assert decision.tile == ('wind', 'north')
+
+
+def test_engine_hu_respects_minimum_tai():
+    game = _ready_game(READY, caller=0, bonus=[])
+    game.player1 = "engine"
+    assert not de.engine_should_call(game, 0, ('dot', 9), "hu")
+    game.bonus[0] = [('animal', 'cat')]
+    assert de.engine_should_call(game, 0, ('dot', 9), "hu")
+
+
+def test_ready_hand_without_tai_is_not_treated_as_ready():
+    ctx = de.TaiContext(bonus=[], seat=2, prevailing='east')
+    assert de.scoring_waits(READY, [], ctx) == []
+    ctx.bonus = [('animal', 'rooster')]
+    assert de.scoring_waits(READY, [], ctx) == [('dot', 9)]
+
+
+def test_engine_prefers_pong_of_scoring_dragon():
+    engine = StrategyEngine()
+    ctx = de.TaiContext(bonus=[], seat=2, prevailing='east')
+    hand = B(1, 2, 3) + D(4, 5, 6) + W(2, 3) + [('dragon', 'red')] * 2 + D(8, 9) + [('wind', 'north')]
+    assert engine.should_pong(hand, [], ('dragon', 'red'), [], 0.0, ctx).action == "pong"
+
+
+def test_concealed_kong_on_own_turn():
+    game = _quiet_game()
+    game.hands[1] = B(5, 5, 5, 5) + D(1, 2, 3) + W(4, 5, 6) + D(7, 8, 9) + W(1)
+    game.melds[1] = []
+    assert game.self_kong_options(1) == [('bamboo', 5)]
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert game.perform_self_kong(1, ('bamboo', 5))
+    assert game.melds[1] == [B(5, 5, 5, 5)]
+    assert game.effective_hand_size(1) == 13
+
+
+def test_promoted_kong_adds_to_exposed_pong():
+    game = _quiet_game()
+    game.hands[1] = B(5) + D(1, 2, 3) + W(4, 5, 6) + D(7, 8, 9) + W(1, 1)
+    game.melds[1] = [B(5, 5, 5)]
+    assert game.self_kong_options(1) == [('bamboo', 5)]
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert game.perform_self_kong(1, ('bamboo', 5))
+    assert game.melds[1] == [B(5, 5, 5, 5)] and ('bamboo', 5) not in game.hands[1]
+
+
+def test_promoted_kong_can_be_robbed(monkeypatch):
+    game = _quiet_game()
+    game.verbose = False
+    game.hands[1] = D(9) + D(1, 2, 3) + W(4, 5, 6) + B(7, 8, 9) + W(1, 1)
+    game.melds[1] = [D(9, 9, 9)[:3]]
+    game.hands[2] = list(READY)          # waiting on 9 dots
+    game.melds[2] = []
+    game.bonus[2] = [('animal', 'cat')]
+    monkeypatch.setattr(sim, "ai_should_call", lambda *_: True)
+    game.current_player = 1
+    assert sim.self_turn_kongs(game, 1) == "win"
+    assert game.result["winner"] == 2 and game.result["shooter"] == 1
+    assert ('dot', 9) in game.hands[2]
+
+
+def test_engine_player_one_simulation_runs_cleanly():
+    # check=True asserts tile conservation and hand sizes after every discard
+    # and validates every win (complete hand, minimum tai, shooter recorded).
+    stats = sim.simulate(40, seed=11, check=True, progress=False)
+    assert stats["errors"] == []
+    finished = stats["p1_wins"] + sum(stats["other_wins"].values()) + stats["draws"]
+    assert finished == 40
+    assert stats["p1_wins"] > 20
+
+
+# --------------------------------------------------------------------------
+# Regression tests from the full-project review
+# --------------------------------------------------------------------------
+def test_useful_tiles_discounts_pair_whose_copies_are_all_visible():
+    from D_hand_eval import useful_tiles
+    red = ('dragon', 'red')
+    hand = [red, red, ('bamboo', 1), ('bamboo', 5), ('bamboo', 9)]
+    live = useful_tiles(hand)[0]
+    dead = next(t for t in useful_tiles(hand, visible_tiles=[red, red]) if t["tile"] == red)
+    assert live["tile"] == red
+    assert dead["usefulness"] < live["usefulness"]
+
+
+def test_engine_can_win_enforces_minimum_tai():
+    import Decision_Strategy_engine as de
+    game = sim.MahjongGame(dealer=0, wind_round=0)
+    game.verbose = False
+    # Complete shape but no tai: mixed suits, a plain Kong, no bonus tiles.
+    game.melds[0] = [[('bamboo', 9)] * 4]
+    game.hands[0] = [('bamboo', n) for n in range(1, 7)] + [('dot', n) for n in (1, 2, 3)] + [('dragon', 'red')]
+    assert not de.engine_can_win(game, 0, ('dragon', 'red'))
+    game.melds[0] = [[('dragon', 'red')] * 4]
+    game.hands[0][-1] = ('wind', 'north')
+    assert de.engine_can_win(game, 0, ('wind', 'north'))
+
+
+def test_engine_perform_call_kong_draws_replacement_from_back():
+    import Decision_Strategy_engine as de
+    game = sim.MahjongGame(dealer=0, wind_round=0)
+    game.verbose = False
+    tile = ('dot', 5)
+    game.hands[1] = [tile] * 3 + [('bamboo', n) for n in range(1, 10)] + [('wan', 1)]
+    game.discards[0] = [tile]
+    assert de.engine_perform_call(game, 1, 0, tile, "kong", decide=False)
+    assert game.kong_replacement and not game.skip_next_draw
+    assert game.melds[1] == [[tile] * 4]
+
+
+def test_sample_wall_keeps_unrevealed_bonus_tiles():
+    import random
+    import singapore_rules as sg
+    from R_opponent_analysis import OpponentAnalyzer
+    sim.rng = random.Random(3)
+    game = sim.MahjongGame()
+    game.verbose = False
+    game.deal()
+    wall = OpponentAnalyzer().update_from_game(game).sample_wall(random.Random(0))
+    assert len(wall) == len(game.wall)
+    assert sum(map(sg.is_bonus, wall)) == sum(map(sg.is_bonus, game.wall))
+
+
+# --------------------------------------------------------------------------
+# Singapore rules: limit hands, situational tai and instant payments
+# --------------------------------------------------------------------------
+def _honours(suit, *names, n=1):
+    return [(suit, name) for name in names for _ in range(n)]
+
+
+THIRTEEN = (B(1, 9) + D(1, 9) + W(1, 9) + _honours('wind', 'east', 'south', 'west', 'north')
+            + _honours('dragon', 'red', 'green', 'white'))
+
+
+def test_thirteen_wonders_is_a_limit_hand():
+    hand = THIRTEEN + [('dragon', 'red')]
+    assert is_winning_hand(hand)
+    assert not is_winning_hand(hand[3:], [B(2, 3, 4)])  # concealed only
+    assert sg.score_hand(hand, [], [], seat=1) == {"tai": sg.MAX_TAI, "items": [("Thirteen Wonders", sg.MAX_TAI)]}
+    # waiting on all thirteen after holding one of each
+    assert set(winning_tiles(THIRTEEN)) == set(THIRTEEN)
+
+
+def test_dragon_and_wind_limit_hands():
+    big_dragons = _honours('dragon', 'red', 'green', 'white', n=3) + B(1, 2, 3) + D(5, 5)
+    assert ("Big Three Dragons", sg.MAX_TAI) in sg.score_hand(big_dragons, [], [], seat=1)["items"]
+    small_dragons = _honours('dragon', 'red', 'green', n=3) + _honours('dragon', 'white', n=2) + B(1, 2, 3) + D(4, 5, 6)
+    score = sg.score_hand(small_dragons, [], [], seat=2, prevailing_wind="east")
+    assert ("Small Three Dragons", sg.SMALL_THREE_DRAGONS_TAI) in score["items"]
+    assert score["tai"] == 4   # two dragon pongs + small three dragons
+    big_winds = _honours('wind', 'east', 'south', 'west', 'north', n=3) + D(5, 5)
+    assert ("Big Four Winds", sg.MAX_TAI) in sg.score_hand(big_winds, [], [], seat=1)["items"]
+    small_winds = _honours('wind', 'east', 'south', 'west', n=3) + _honours('wind', 'north', n=2) + B(1, 2, 3)
+    assert sg.score_hand(small_winds, [], [], seat=1)["tai"] == sg.MAX_TAI
+
+
+def test_situation_tai_items():
+    names = [d for d, _ in sg.situation_tai(kong_replacement=True, robbed_kong=True, last_tile=True)]
+    assert len(names) == 3
+    score = sg.score_hand(PLAIN_WIN, [], [], seat=1, situation=sg.situation_tai(last_tile=True))
+    assert score["tai"] == sg.SITUATION_TAI
+    assert sg.score_hand(PLAIN_WIN, [], [], seat=1, situation=sg.situation_tai(heavenly=True))["tai"] == sg.MAX_TAI
+
+
+def test_win_on_kong_replacement_and_last_tile():
+    game = _quiet_game()
+    game.verbose = False
+    game.turns = 5
+    game.hands[1] = list(PLAIN_WIN)
+    game.melds[1] = []
+    game.bonus[1] = []
+    game.current_player = 1
+    assert not game.can_hu(1)          # 0 tai
+    game.kong_draw = True
+    assert game.score_win(1)["tai"] == sg.SITUATION_TAI
+    game.kong_draw = False
+    game.wall = []
+    assert game.can_hu(1)              # last tile of the wall
+
+
+def test_robbing_the_kong_scores_and_skips_kong_payment():
+    ready = B(1, 2, 3) + D(4, 5, 6) + W(7, 8, 9) + W(2, 2, 2) + D(9)
+    game = _ready_game(ready, caller=2, bonus=[])
+    game.verbose = False
+    game.turns = 9
+    game.melds[0] = [D(9, 9, 9)]
+    game.hands[0] = game.hands[0][:10] + [('dot', 9)]
+    game.player1 = "engine"
+    rob = {"self_kong": True}
+    original = sim.decide_call
+    sim.decide_call = lambda g, p, t, kind, prompt: rob.get(kind, False)
+    try:
+        assert sim.self_turn_kongs(game, 0) == "win"
+    finally:
+        sim.decide_call = original
+    assert game.result["winner"] == 2 and game.result["shooter"] == 0
+    assert any("Robbing" in d for d, _ in game.result["score"]["items"])
+    assert not game.instant           # a robbed Kong is never paid
+
+
+def test_heavenly_and_earthly_hands():
+    game = _quiet_game(dealer=0)
+    game.verbose = False
+    game.turns = 1
+    for p in range(4):
+        game.melds[p] = []
+    game.hands[0] = list(PLAIN_WIN)
+    game.bonus[0] = []
+    assert game.score_win(0)["tai"] == sg.MAX_TAI          # heavenly
+    ready = B(1, 2, 3) + D(4, 5, 6) + W(7, 8, 9) + W(2, 2, 2) + D(9)
+    game.hands[2] = list(ready)
+    game.bonus[2] = []
+    game.current_player = 0
+    game.discards[0] = [('dot', 9)]
+    assert game.score_win(2, ('dot', 9))["tai"] == sg.MAX_TAI  # earthly
+    game.turns = 2
+    assert game.score_win(2, ('dot', 9))["tai"] == 0
+
+
+def test_kong_instant_payments():
+    game = _quiet_game()
+    game.verbose = False
+    game.hands[1] = B(5, 5, 5) + game.hands[1][3:]
+    game.discards[0] = [('bamboo', 5)]
+    assert game.perform_kong(1, 0, ('bamboo', 5))
+    assert game.instant == {1: 3, 0: -1, 2: -1, 3: -1}
+    game.hands[2] = D(7, 7, 7, 7) + W(1, 2, 3, 4, 5, 6, 7, 8, 9) + D(1)
+    assert game.perform_self_kong(2, ('dot', 7))
+    assert game.instant == {1: 1, 0: -3, 2: 5, 3: -3}
+    assert sum(game.instant.values()) == 0
+
+
+def test_engine_kong_call_also_pays():
+    import Decision_Strategy_engine as de
+    game = _quiet_game()
+    game.verbose = False
+    game.hands[1] = B(5, 5, 5) + game.hands[1][3:]
+    game.discards[0] = [('bamboo', 5)]
+    assert de.engine_perform_call(game, 1, 0, ('bamboo', 5), "kong", decide=False)
+    assert game.instant[1] == 3 * sg.KONG_PAYMENT["exposed"]
+
+
+def test_animal_pair_and_bonus_set_instant_payments():
+    assert sg.bonus_payments([('animal', 'cat')], ('animal', 'mouse')) == [
+        ("Cat Animal + Mouse Animal", sg.ANIMAL_PAIR_PAYMENT)]
+    assert sg.bonus_payments([('animal', 'cat')], ('animal', 'rooster')) == []
+    assert sg.bonus_payments(sg.SEASONS[:3], sg.SEASONS[3])[0][1] == sg.BONUS_SET_PAYMENT
+    game = _quiet_game()
+    game.verbose = False
+    game.instant.clear()
+    game.bonus[3] = [('animal', 'rooster')]
+    game.hands[3].append(('animal', 'centipede'))
+    game.reveal_bonus(3, ('animal', 'centipede'))
+    assert game.instant == {3: 3, 0: -1, 1: -1, 2: -1}
+
+
+def test_simulation_instant_payments_are_zero_sum():
+    sim.rng = random.Random(11)
+    totals = Counter()
+    for _ in range(40):
+        game = sim.play_game(player1="engine", delay=0, verbose=False, check=True)
+        assert sum(game.instant.values()) == 0
+        totals.update(game.instant)
+    assert totals   # kongs / animal pairs do happen in 40 games
+
+
+def test_resumed_game_dealer_still_draws():
+    # A game resumed mid-way (Player 1 to move, Player 4 dealer) has no
+    # "dealer discards without drawing" turn, so every hand stays legal.
+    sim.rng = random.Random(4)
+    game = _quiet_game(dealer=3)
+    game.verbose = False
+    game.player1 = "engine"
+    game.wall.append(game.hands[3].pop())   # dealer back to 13 tiles
+    game.current_player = 0
+    game.turns = 10
+    sim.play_game(game=game, delay=0, check=True)

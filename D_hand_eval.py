@@ -25,6 +25,12 @@ ALL_TILE_TYPES = (
     + [("dragon", d) for d in DRAGONS]
 )
 ALL_TILE_SET = frozenset(ALL_TILE_TYPES)
+# Thirteen Wonders: one of every terminal and honour, plus one more of any of them.
+THIRTEEN_WONDERS = frozenset(
+    [(s, n) for s in NUMBER_SUITS for n in (1, 9)]
+    + [("wind", w) for w in WINDS]
+    + [("dragon", d) for d in DRAGONS]
+)
 
 
 def _compute_sort_key(tile):
@@ -154,7 +160,14 @@ def is_winning_hand(hand, exposed_melds=None):
     valid, reason = validate_hand(hand)
     if not valid:
         return False
+    if sets_needed == 4 and is_thirteen_wonders(hand):
+        return True
     return _is_winning_cached(_normalise_hand(hand), sets_needed)
+
+
+def is_thirteen_wonders(hand):
+    """All 13 terminals and honours plus a pair of one of them (concealed only)."""
+    return len(hand) == 14 and set(hand) == THIRTEEN_WONDERS
 
 
 @lru_cache(maxsize=None)

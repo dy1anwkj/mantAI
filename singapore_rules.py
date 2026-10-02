@@ -10,11 +10,15 @@
   capped at MAX_TAI.
 - Payouts double with every tai. A self-drawn win is paid double by all three
   opponents. On a discard win the shooter pays more (see SHOOTER_MODE).
+- Limit hands (Thirteen Wonders, Big Three Dragons, Big / Small Four Winds,
+  All Honours, Heavenly / Earthly Hand) score MAX_TAI.
+- Instant payments are made during play, win or not: for every Kong and for
+  completed animal pairs or flower / season sets (see the *_PAYMENT values).
 """
 
 from collections import Counter
 
-from D_hand_eval import NUMBER_SUITS, WINDS, _normalise_hand, tile_sort_key
+from D_hand_eval import NUMBER_SUITS, WINDS, _normalise_hand, is_thirteen_wonders, tile_sort_key
 
 FLOWERS = [('flower', n) for n in range(1, 5)]   # red set, numbered 1-4
 SEASONS = [('season', n) for n in range(1, 5)]   # blue set, numbered 1-4
@@ -30,6 +34,19 @@ MAX_TAI = 5
 # "half": shooter pays double, the other two pay single.
 # "full": shooter alone pays for the whole table (4x).
 SHOOTER_MODE = "half"
+
+# Extra tai on top of the two dragon pongs (1 tai each): 4 tai in total.
+SMALL_THREE_DRAGONS_TAI = 2
+# 1 tai each for winning on a Kong replacement tile, robbing a Kong,
+# or self-drawing the last tile of the wall.
+SITUATION_TAI = 1
+
+# Instant payments: units EACH opponent pays straight away.
+KONG_PAYMENT = {"exposed": 1, "concealed": 2}
+ANIMAL_PAIRS = ((('animal', 'cat'), ('animal', 'mouse')),
+                (('animal', 'rooster'), ('animal', 'centipede')))
+ANIMAL_PAIR_PAYMENT = 1        # cat + mouse, or rooster + centipede
+BONUS_SET_PAYMENT = 2          # all 4 flowers, or all 4 seasons
 
 
 def is_bonus(tile):
@@ -126,6 +143,18 @@ def _pattern_tai(pair, sets, seat_wind_name, prevailing_wind, has_bonus, two_sid
             if tile[1] == prevailing_wind:
                 items.append((f"Pong of prevailing wind ({tile[1]})", 1))
 
+    pongs = [meld[0] for meld in sets if _is_pong(meld)]
+    dragon_pongs = sum(t[0] == 'dragon' for t in pongs)
+    wind_pongs = sum(t[0] == 'wind' for t in pongs)
+    if dragon_pongs == 3:
+        items.append(("Big Three Dragons", MAX_TAI))
+    elif dragon_pongs == 2 and pair[0] == 'dragon':
+        items.append(("Small Three Dragons", SMALL_THREE_DRAGONS_TAI))
+    if wind_pongs == 4:
+        items.append(("Big Four Winds", MAX_TAI))
+    elif wind_pongs == 3 and pair[0] == 'wind':
+        items.append(("Small Four Winds", MAX_TAI))
+
     every_tile = [pair] + [t for meld in sets for t in meld]
     suits = {t[0] for t in every_tile if t[0] in NUMBER_SUITS}
     has_honours = any(t[0] not in NUMBER_SUITS for t in every_tile)
@@ -146,7 +175,25 @@ def _pattern_tai(pair, sets, seat_wind_name, prevailing_wind, has_bonus, two_sid
     return items
 
 
-def score_hand(concealed, melds, bonus_tiles, seat, prevailing_wind="east", waits_before_win=()):
+def situation_tai(kong_replacement=False, robbed_kong=False, last_tile=False,
+                  heavenly=False, earthly=False):
+    """Tai that depend on how the hand was won rather than on its tiles."""
+    items = []
+    if heavenly:
+        items.append(("Heavenly Hand (dealer wins on the deal)", MAX_TAI))
+    if earthly:
+        items.append(("Earthly Hand (win on the dealer's first discard)", MAX_TAI))
+    if kong_replacement:
+        items.append(("Win on a Kong replacement tile", SITUATION_TAI))
+    if robbed_kong:
+        items.append(("Robbing the Kong", SITUATION_TAI))
+    if last_tile:
+        items.append(("Win on the last tile of the wall", SITUATION_TAI))
+    return items
+
+
+def score_hand(concealed, melds, bonus_tiles, seat, prevailing_wind="east", waits_before_win=(),
+               situation=()):
     """
     Score a complete winning hand.
 
@@ -156,6 +203,7 @@ def score_hand(concealed, melds, bonus_tiles, seat, prevailing_wind="east", wait
     seat              : 1-4 (1 = East / dealer)
     waits_before_win  : tiles the hand was waiting on before it won,
                         used to tell whether the wait was two-sided (Ping Hu)
+    situation         : extra (description, tai) items, see situation_tai()
 
     Returns {"tai": int, "items": [(description, tai), ...]} using the
     highest-scoring way to read the hand, or None if it is not a winning hand.
@@ -165,9 +213,14 @@ def score_hand(concealed, melds, bonus_tiles, seat, prevailing_wind="east", wait
     bonus_items = bonus_tai(bonus_tiles, seat)
     wind_name = WINDS[seat - 1]
 
+    extra = bonus_items + list(situation)
+
     best = None
+    if not melds and is_thirteen_wonders(list(concealed)):
+        items = extra + [("Thirteen Wonders", MAX_TAI)]
+        best = {"tai": min(MAX_TAI, sum(tai for _, tai in items)), "items": items}
     for pair, sets in decompositions(concealed, sets_needed):
-        items = bonus_items + _pattern_tai(
+        items = extra + _pattern_tai(
             pair, sets + exposed, wind_name, prevailing_wind,
             has_bonus=bool(bonus_tiles), two_sided_wait=len(waits_before_win) >= 2,
         )
@@ -196,3 +249,26 @@ def payouts(tai, winner, self_drawn, shooter=None, mode=None):
             result[p] -= 2 * base if p == shooter else base
     result[winner] = -sum(result.values())
     return dict(result)
+
+
+def instant_payment(receiver, units_each):
+    """Every opponent pays `units_each` units to `receiver`."""
+    return {p: 3 * units_each if p == receiver else -units_each for p in range(4)}
+
+
+def kong_payment(concealed):
+    return KONG_PAYMENT["concealed" if concealed else "exposed"]
+
+
+def bonus_payments(revealed, new_tile):
+    """(description, units_each) earned by revealing `new_tile`, given the
+    bonus tiles the player had already revealed."""
+    have = set(revealed) | {new_tile}
+    items = []
+    for pair in ANIMAL_PAIRS:
+        if new_tile in pair and all(t in have for t in pair):
+            items.append((f"{format_bonus(pair[0])} + {format_bonus(pair[1])}", ANIMAL_PAIR_PAYMENT))
+    for suit, label in (('flower', 'flowers'), ('season', 'seasons')):
+        if new_tile[0] == suit and sum(t[0] == suit for t in have) == 4:
+            items.append((f"Complete set of {label}", BONUS_SET_PAYMENT))
+    return items

@@ -18,7 +18,7 @@ How it thinks
 Discard score = attack value (low shanten, high ukeire, good shape)
                 - defence penalty (danger x how threatening opponents are)
 
-Tiles use the same format as the simulator / D_hand_eval:
+Tiles use the same format as the simulator / hand_eval:
     ('bamboo', 5), ('dot', 1), ('wan', 9), ('wind', 'east'), ('dragon', 'red')
 
 Quick use with the simulator:
@@ -31,46 +31,17 @@ from collections import Counter
 from dataclasses import dataclass, field
 from functools import lru_cache
 
-try:
-    from D_hand_eval import (  # pyright: ignore[reportMissingImports]
-        ALL_TILE_TYPES,
-        NUMBER_SUITS,
-        analyze_hand,
-        format_tile,
-        hand_structure_score,
-        is_winning_hand,
-        tile_sort_key,
-    )
-except ImportError:  # pragma: no cover - fallback for environments without D_hand_eval
-    ALL_TILE_TYPES = [
-        ("bamboo", 1), ("bamboo", 2), ("bamboo", 3), ("bamboo", 4), ("bamboo", 5), ("bamboo", 6), ("bamboo", 7), ("bamboo", 8), ("bamboo", 9),
-        ("dot", 1), ("dot", 2), ("dot", 3), ("dot", 4), ("dot", 5), ("dot", 6), ("dot", 7), ("dot", 8), ("dot", 9),
-        ("wan", 1), ("wan", 2), ("wan", 3), ("wan", 4), ("wan", 5), ("wan", 6), ("wan", 7), ("wan", 8), ("wan", 9),
-        ("wind", "east"), ("wind", "south"), ("wind", "west"), ("wind", "north"),
-        ("dragon", "red"), ("dragon", "green"), ("dragon", "white"),
-    ]
-    NUMBER_SUITS = ("bamboo", "dot", "wan")
-
-    def format_tile(tile):
-        suit, value = tile
-        if suit in {"wind", "dragon"}:
-            return f"{value}"
-        return f"{suit[0]}{value}"
-
-    def tile_sort_key(tile):
-        suit, value = tile
-        suit_order = {"bamboo": 0, "dot": 1, "wan": 2, "wind": 3, "dragon": 4}
-        value_order = {"east": 0, "south": 1, "west": 2, "north": 3, "red": 0, "green": 1, "white": 2}
-        return (suit_order.get(suit, 5), value if isinstance(value, int) else value_order.get(value, 0))
-
-    def analyze_hand(hand, melds=None, visible_tiles=None):
-        return {"ok": False, "tiles": list(hand), "melds": list(melds or []), "visible_tiles": list(visible_tiles or [])}
-
-    def hand_structure_score(hand):
-        return 0.0
-
-    def is_winning_hand(hand, melds=None):
-        return False
+from D_hand_eval import (
+    ALL_TILE_TYPES,
+    NUMBER_SUITS,
+    analyze_hand,
+    format_tile,
+    hand_structure_score,
+    is_winning_hand,
+    tile_sort_key,
+    winning_tiles,
+)
+import singapore_rules as sg
 
 # --------------------------------------------------------------------------
 # Tunable weights (Part 5 - AI training - can adjust these)
@@ -78,14 +49,82 @@ except ImportError:  # pragma: no cover - fallback for environments without D_ha
 DEFAULT_WEIGHTS = {
     "shanten": 100.0,          # each step closer to ready is worth a lot
     "ukeire": 3.0,             # each extra useful unseen tile
-    "structure": 0.5,          # D_hand_eval's shape score (tie-breaker)
+    "structure": 0.5,          # hand_eval's shape score (tie-breaker)
     "danger": 150.0,           # penalty for risky discards when defending
-    "draw_probability": 250.0, # high chance a tile appears again in the unseen wall = keep it, not discard it
-    "honor_pong_bonus": 15.0,  # dragons are worth points, pong them more readily
+    "draw_probability": 250.0, # tie-breaker: a tile likely to be drawn again is worth keeping (prob is ~0-0.03)
+    "honor_pong_bonus": 15.0,  # dragons / scoring winds are worth tai, pong them more readily
+    "tai_potential": 12.0,     # keep pairs / pongs of honours that score tai
+    "no_tai_ready": 1.0,       # a ready hand that cannot reach the minimum tai counts as 1 away
+    "lookahead": 0,            # re-rank this many top discards by two-step ukeire (0 = off, slower when on)
+    "ukeire2": 0.05,           # weight of the two-step ukeire in that re-ranking
+    "call_widen": 0,           # also Pong / Chi at equal shanten when ukeire grows by at least this (0 = off)
 }
 
+
 # --------------------------------------------------------------------------
-# Tile <-> index helpers (34 tile types, same order as D_hand_eval)
+# Tai context (Singapore rules): a hand needs MIN_TAI to be allowed to win
+# --------------------------------------------------------------------------
+@dataclass
+class TaiContext:
+    bonus: list = field(default_factory=list)   # revealed flowers / seasons / animals
+    seat: int = 1                               # 1 = East (dealer) ... 4 = North
+    prevailing: str = "east"
+    min_tai: int = 1
+
+    @property
+    def seat_wind(self):
+        return ("east", "south", "west", "north")[self.seat - 1]
+
+    def bonus_tai(self):
+        return sum(t for _, t in sg.bonus_tai(self.bonus, self.seat))
+
+    def scoring_honours(self):
+        return {("dragon", "red"), ("dragon", "green"), ("dragon", "white"),
+                ("wind", self.seat_wind), ("wind", self.prevailing)}
+
+
+def hand_tai(concealed, melds, ctx, waits_before=()):
+    """Tai of a complete hand (concealed includes the winning tile), or None."""
+    if ctx is None:
+        return sg.MAX_TAI
+    result = sg.score_hand(list(concealed), melds, ctx.bonus, ctx.seat, ctx.prevailing, waits_before)
+    return None if result is None else result["tai"]
+
+
+def scoring_waits(hand, melds, ctx):
+    """Winning tiles for a ready hand that also reach the minimum tai."""
+    waits = winning_tiles(hand, melds)
+    if ctx is None:
+        return waits
+    return [w for w in waits
+            if (hand_tai(list(hand) + [w], melds, ctx, waits) or 0) >= ctx.min_tai]
+
+
+def tai_potential(hand, melds, ctx):
+    """How well the hand is set up to score tai (0 when tai is already secure)."""
+    if ctx is None or ctx.bonus_tai() >= ctx.min_tai:
+        return 0.0
+    counts = Counter(hand)
+    for meld in melds:
+        counts.update(meld[:3])
+    value = 0.0
+    for tile in ctx.scoring_honours():
+        c = counts[tile]
+        if c >= 3:
+            value += 3.0
+        elif c == 2:
+            value += 1.0
+    # half / full colour: reward concentrating suited tiles in one suit
+    suited = Counter(t[0] for t in list(hand) + [t for m in melds for t in m[:3]] if t[0] in NUMBER_SUITS)
+    if suited:
+        other = sum(suited.values()) - max(suited.values())
+        if other <= 2:
+            value += 1.5 - 0.5 * other
+    return value
+
+
+# --------------------------------------------------------------------------
+# Tile <-> index helpers (34 tile types, same order as hand_eval)
 # --------------------------------------------------------------------------
 TILE_INDEX = {tile: i for i, tile in enumerate(ALL_TILE_TYPES)}
 NUM_TYPES = len(ALL_TILE_TYPES)  # 34
@@ -362,8 +401,10 @@ class StrategyEngine:
         return is_winning_hand(list(hand), melds or [])
 
     # ---------------- Discard ----------------
-    def evaluate_discards(self, hand, melds=None, visible_tiles=None, threat=0.0):
-        """Score every possible discard. Hand should have 14 - 3*melds tiles."""
+    def evaluate_discards(self, hand, melds=None, visible_tiles=None, threat=0.0, tai_ctx=None):
+        """Score every possible discard. Hand should have 14 - 3*melds tiles.
+        tai_ctx (TaiContext) makes the engine aim for hands that reach the
+        Singapore minimum tai instead of any complete shape."""
         melds = melds or []
         visible_tiles = visible_tiles or []
         results = []
@@ -373,7 +414,19 @@ class StrategyEngine:
             remaining.remove(tile)          # remove ONE copy only
 
             s = shanten(remaining, melds)
-            uk, improving = ukeire(remaining, melds, visible_tiles, s)
+            if s == 0 and tai_ctx is not None:
+                # Ready: only waits that reach the minimum tai count.
+                good = scoring_waits(remaining, melds, tai_ctx)
+                unseen = unseen_counts(remaining, visible_tiles)
+                improving = {w: unseen[w] for w in good if unseen[w]}
+                uk = sum(improving.values())
+                if not good:
+                    s = self.w["no_tai_ready"]
+                    uk, improving = ukeire(remaining, melds, visible_tiles, 0)
+                    uk = 0
+            else:
+                uk, improving = ukeire(remaining, melds, visible_tiles, s)
+            potential = tai_potential(remaining, melds, tai_ctx)
             structure = hand_structure_score(remaining)
             danger = self.danger_fn(tile, hand, visible_tiles)
             draw_prob = tile_draw_probability(tile, hand, visible_tiles)
@@ -386,7 +439,8 @@ class StrategyEngine:
                 + self.w["ukeire"] * uk
                 + self.w["structure"] * structure
                 - self.w["danger"] * defence * danger
-                - self.w["draw_probability"] * draw_prob * 100.0
+                - self.w["draw_probability"] * draw_prob
+                + self.w["tai_potential"] * potential
             )
             results.append({
                 "tile": tile,
@@ -397,13 +451,57 @@ class StrategyEngine:
                 "structure": structure,
                 "danger": danger,
                 "draw_probability": round(draw_prob, 4),
+                "tai_potential": potential,
             })
 
         results.sort(key=lambda r: r["score"], reverse=True)
         return results
 
-    def choose_discard(self, hand, melds=None, visible_tiles=None, threat=0.0):
-        ranked = self.evaluate_discards(hand, melds, visible_tiles, threat)
+    def second_order_ukeire(self, hand13, melds, visible_tiles, tai_ctx=None):
+        """
+        Two-step lookahead for a 13-tile hand that is not ready yet: for every
+        tile that would improve it, draw that tile, make the best discard, and
+        add up the ukeire of the result (weighted by copies left). Picks hands
+        that keep improving, not only hands that improve once.
+        """
+        melds = melds or []
+        s = shanten(hand13, melds)
+        if s <= 0:
+            return 0.0
+        _, improving = ukeire(hand13, melds, visible_tiles, s)
+        total = 0.0
+        for tile, copies in improving.items():
+            after_draw = list(hand13) + [tile]
+            best_uk = 0
+            for d in set(after_draw):
+                rest = list(after_draw)
+                rest.remove(d)
+                s2 = shanten(rest, melds)
+                if s2 >= s:
+                    continue
+                if s2 == 0 and tai_ctx is not None:
+                    unseen = unseen_counts(rest, visible_tiles + [tile])
+                    uk2 = sum(unseen[w] for w in scoring_waits(rest, melds, tai_ctx))
+                else:
+                    uk2, _ = ukeire(rest, melds, visible_tiles + [tile], s2)
+                best_uk = max(best_uk, uk2)
+            total += copies * best_uk
+        return total
+
+    def choose_discard(self, hand, melds=None, visible_tiles=None, threat=0.0, tai_ctx=None):
+        ranked = self.evaluate_discards(hand, melds, visible_tiles, threat, tai_ctx)
+        k = int(self.w.get("lookahead", 0))
+        if k and len(ranked) > 1 and ranked[0]["shanten"] >= 1:
+            top_s = ranked[0]["shanten"]
+            head = [r for r in ranked[:k] if r["shanten"] == top_s]
+            if len(head) > 1:
+                for r in head:
+                    rest = list(hand)
+                    rest.remove(r["tile"])
+                    r["ukeire2"] = self.second_order_ukeire(rest, melds or [], list(visible_tiles or []), tai_ctx)
+                    r["score"] = round(r["score"] + self.w["ukeire2"] * r["ukeire2"], 2)
+                head.sort(key=lambda r: r["score"], reverse=True)
+                ranked = head + [r for r in ranked if r not in head]
         best = ranked[0]
         state = "ready" if best["shanten"] == 0 else f"{best['shanten']} away from ready"
         reason = (
@@ -415,33 +513,44 @@ class StrategyEngine:
         return Decision("discard", best["tile"], best["score"], reason, ranked)
 
     # ---------------- Calls (Pong / Chi / Kong) ----------------
-    def _best_after_call(self, hand_after, melds_after, visible_tiles, threat):
+    def _best_after_call(self, hand_after, melds_after, visible_tiles, threat, tai_ctx=None):
         """After a Pong/Chi we must discard: find the best result."""
-        ranked = self.evaluate_discards(hand_after, melds_after, visible_tiles, threat)
+        ranked = self.evaluate_discards(hand_after, melds_after, visible_tiles, threat, tai_ctx)
         return ranked[0]
 
-    def _current_value(self, hand, melds, visible_tiles):
+    def _current_value(self, hand, melds, visible_tiles, tai_ctx=None):
+        """Shanten / ukeire of a 13-tile (waiting) hand, tai-aware like discards."""
         s = shanten(hand, melds)
+        if s == 0 and tai_ctx is not None:
+            good = scoring_waits(hand, melds, tai_ctx)
+            unseen = unseen_counts(hand, visible_tiles)
+            if good:
+                return 0, sum(unseen[w] for w in good)
+            return self.w["no_tai_ready"], 0
         uk, _ = ukeire(hand, melds, visible_tiles, s)
         return s, uk
 
-    def should_pong(self, hand, melds, tile, visible_tiles=None, threat=0.0):
+    def should_pong(self, hand, melds, tile, visible_tiles=None, threat=0.0, tai_ctx=None):
         melds = melds or []
         visible_tiles = visible_tiles or []
         if hand.count(tile) < 2:
             return Decision("pass", tile, reason="Not enough tiles to Pong")
 
-        cur_s, cur_uk = self._current_value(hand, melds, visible_tiles)
+        cur_s, cur_uk = self._current_value(hand, melds, visible_tiles, tai_ctx)
         after = list(hand)
         after.remove(tile); after.remove(tile)
         new_melds = melds + [[tile] * 3]
-        best = self._best_after_call(after, new_melds, visible_tiles, threat)
+        best = self._best_after_call(after, new_melds, visible_tiles, threat, tai_ctx)
 
-        bonus = self.w["honor_pong_bonus"] if tile[0] == "dragon" else 0.0
+        scoring = tai_ctx.scoring_honours() if tai_ctx else {t for t in ALL_TILE_TYPES if t[0] == "dragon"}
+        bonus = self.w["honor_pong_bonus"] if tile in scoring else 0.0
         gain = self.w["shanten"] * (cur_s - best["shanten"]) + self.w["ukeire"] * (best["ukeire"] - cur_uk) + bonus
 
         # Only pong for free (same shanten) on dragons, and never break a ready hand
-        if best["shanten"] < cur_s or (best["shanten"] == cur_s and cur_s > 0 and gain > 0 and bonus):
+        widen = self.w.get("call_widen", 0)
+        if (best["shanten"] < cur_s
+                or (best["shanten"] == cur_s and cur_s > 0 and gain > 0 and bonus)
+                or (widen and best["shanten"] == cur_s and cur_s > 0 and best["ukeire"] - cur_uk >= widen)):
             return Decision("pong", tile, gain,
                             f"Pong {format_tile(tile)}: shanten {cur_s} -> {best['shanten']}, "
                             f"then discard {format_tile(best['tile'])}")
@@ -461,7 +570,7 @@ class StrategyEngine:
                 options.append(pair)
         return options
 
-    def should_chi(self, hand, melds, tile, visible_tiles=None, threat=0.0):
+    def should_chi(self, hand, melds, tile, visible_tiles=None, threat=0.0, tai_ctx=None):
         """Returns Decision; if action == 'chi', details[0] is the 2 tiles to use."""
         melds = melds or []
         visible_tiles = visible_tiles or []
@@ -469,18 +578,21 @@ class StrategyEngine:
         if not options:
             return Decision("pass", tile, reason="No Chi possible")
 
-        cur_s, cur_uk = self._current_value(hand, melds, visible_tiles)
+        cur_s, cur_uk = self._current_value(hand, melds, visible_tiles, tai_ctx)
         best_option, best_result = None, None
         for pair in options:
             after = list(hand)
             for t in pair:
                 after.remove(t)
             new_melds = melds + [sorted([tile] + pair, key=tile_sort_key)]
-            result = self._best_after_call(after, new_melds, visible_tiles, threat)
+            result = self._best_after_call(after, new_melds, visible_tiles, threat, tai_ctx)
             if best_result is None or result["score"] > best_result["score"]:
                 best_option, best_result = pair, result
 
-        if best_result["shanten"] < cur_s:
+        widen = self.w.get("call_widen", 0)
+        if best_result["shanten"] < cur_s or (
+                widen and best_result["shanten"] == cur_s and cur_s > 0
+                and best_result["ukeire"] - cur_uk >= widen):
             return Decision("chi", tile, best_result["score"],
                             f"Chi {format_tile(tile)} with {[format_tile(t) for t in best_option]}: "
                             f"shanten {cur_s} -> {best_result['shanten']}",
@@ -488,18 +600,47 @@ class StrategyEngine:
         return Decision("pass", tile, 0.0,
                         f"Skip Chi {format_tile(tile)}: doesn't bring hand closer to ready")
 
-    def should_kong(self, hand, melds, tile, visible_tiles=None, threat=0.0):
+    def should_kong(self, hand, melds, tile, visible_tiles=None, threat=0.0, tai_ctx=None):
         melds = melds or []
         if hand.count(tile) != 3:
             return Decision("pass", tile, reason="Need exactly 3 in hand to Kong a discard")
-        cur_s = shanten(hand, melds)
+        cur_s, _ = self._current_value(hand, melds, visible_tiles or [], tai_ctx)
         after = [t for t in hand if t != tile]
-        new_s = shanten(after, melds + [[tile] * 4])
+        new_s, _ = self._current_value(after, melds + [[tile] * 4], visible_tiles or [], tai_ctx)
         if new_s <= cur_s:
             return Decision("kong", tile, 0.0,
                             f"Kong {format_tile(tile)}: keeps hand at shanten {new_s}")
         return Decision("pass", tile, 0.0,
                         f"Skip Kong {format_tile(tile)}: would break up the hand")
+
+    def should_self_kong(self, hand, melds, tile, visible_tiles=None, tai_ctx=None):
+        """
+        Kong on your own turn (hand holds 14 - 3*melds tiles):
+          - concealed Kong: 4 copies in hand
+          - promoted Kong: 1 copy in hand added to an exposed Pong of it
+        Declare it when the hand is no worse off than after the best normal
+        discard, since the Kong also earns a replacement draw.
+        """
+        melds = melds or []
+        visible_tiles = visible_tiles or []
+        if hand.count(tile) == 4:
+            after = [t for t in hand if t != tile]
+            new_melds = melds + [[tile] * 4]
+        elif hand.count(tile) >= 1 and any(len(m) == 3 and m[0] == m[1] == m[2] == tile for m in melds):
+            after = list(hand)
+            after.remove(tile)
+            new_melds = [list(m) for m in melds]
+            for m in new_melds:
+                if len(m) == 3 and m[0] == m[1] == m[2] == tile:
+                    m.append(tile)
+                    break
+        else:
+            return Decision("pass", tile, reason="No Kong possible")
+        best = self.evaluate_discards(hand, melds, visible_tiles, 0.0, tai_ctx)[0]
+        new_s, _ = self._current_value(after, new_melds, visible_tiles, tai_ctx)
+        if new_s <= best["shanten"]:
+            return Decision("kong", tile, 0.0, f"Kong {format_tile(tile)} on own turn: shanten {new_s}")
+        return Decision("pass", tile, 0.0, f"Keep {format_tile(tile)}: Kong would break the hand")
 
 
 # --------------------------------------------------------------------------
@@ -536,6 +677,18 @@ def summarize_player_state(game, player_index, engine=None):
     }
 
 
+def engine_tai_context(game, player_index):
+    """Singapore tai context for a player, or None if the game has no tai rules."""
+    if not hasattr(game, "bonus"):
+        return None
+    return TaiContext(
+        bonus=list(game.bonus[player_index]),
+        seat=game.seat(player_index),
+        prevailing=game.prevailing_wind,
+        min_tai=sg.MIN_TAI,
+    )
+
+
 def engine_choose_discard(game, player_index, engine=None, verbose=False):
     """Drop-in replacement for ai_choose_discard(game, player_index)."""
     engine = engine or _engine
@@ -544,30 +697,38 @@ def engine_choose_discard(game, player_index, engine=None, verbose=False):
         return None
     threat = default_threat_level(game.melds, player_index, len(game.wall))
     decision = engine.choose_discard(hand, game.melds[player_index],
-                                     collect_visible_tiles(game), threat)
+                                     collect_visible_tiles(game), threat,
+                                     engine_tai_context(game, player_index))
     if verbose:
         print(f"[Strategy] Player {player_index + 1}: {decision.reason}")
     return decision.tile
 
 
 def engine_should_call(game, player_index, tile, call_type, engine=None, verbose=False):
-    """call_type: 'pong', 'chi', 'kong' or 'hu'. Returns True/False."""
+    """call_type: 'pong', 'chi', 'kong', 'self_kong' or 'hu'. Returns True/False."""
     engine = engine or _engine
     hand = game.hands[player_index]
     melds = game.melds[player_index]
     visible = collect_visible_tiles(game)
     threat = default_threat_level(game.melds, player_index, len(game.wall))
+    ctx = engine_tai_context(game, player_index)
 
     if call_type == "hu":
         # on your own turn the drawn tile is already in hand; on a discard it isn't
         on_discard = len(hand) + 3 * len(melds) == 13
+        if hasattr(game, "can_hu"):
+            # the simulator's check also enforces the Singapore minimum tai
+            return game.can_hu(player_index, tile if on_discard else None)
         return engine.should_declare_hu(hand, melds, tile if on_discard else None)
     if call_type == "pong":
-        decision = engine.should_pong(hand, melds, tile, visible, threat)
+        decision = engine.should_pong(hand, melds, tile, visible, threat, ctx)
     elif call_type == "chi":
-        decision = engine.should_chi(hand, melds, tile, visible, threat)
+        decision = engine.should_chi(hand, melds, tile, visible, threat, ctx)
     elif call_type == "kong":
-        decision = engine.should_kong(hand, melds, tile, visible, threat)
+        decision = engine.should_kong(hand, melds, tile, visible, threat, ctx)
+    elif call_type == "self_kong":
+        decision = engine.should_self_kong(hand, melds, tile, visible, ctx)
+        call_type = "kong"
     else:
         raise ValueError(f"Unknown call type: {call_type}")
 
@@ -577,15 +738,27 @@ def engine_should_call(game, player_index, tile, call_type, engine=None, verbose
 
 
 # --------------------------------------------------------------------------
-# Safe call handling (works around simulator bugs without editing it)
+# Call helpers: Chi sequence choice, win check, one-step calls
 # --------------------------------------------------------------------------
+def engine_chi_sequence(game, player_index, tile, engine=None):
+    """The two hand tiles the engine would use to Chi `tile` (None to pass)."""
+    engine = engine or _engine
+    decision = engine.should_chi(game.hands[player_index], game.melds[player_index], tile,
+                                 collect_visible_tiles(game),
+                                 default_threat_level(game.melds, player_index, len(game.wall)),
+                                 engine_tai_context(game, player_index))
+    return list(decision.details[0]) if decision.action == "chi" else None
+
+
 def engine_can_win(game, player_index, tile=None):
     """
-    Correct Hu check that also works with Kongs and exposed melds.
-    (The simulator's can_hu() adds meld tiles to the hand and needs exactly
-    14 tiles, so it fails once a player has a Kong.)
+    Can this player win now? Works with Kongs and exposed melds.
     Pass `tile` to check winning on another player's discard.
+    Uses the simulator's can_hu() when available, so the Singapore minimum
+    tai is enforced; otherwise it only checks the hand's shape.
     """
+    if hasattr(game, "can_hu"):
+        return game.can_hu(player_index, tile)
     return _engine.should_declare_hu(game.hands[player_index],
                                      game.melds[player_index], tile)
 
@@ -593,15 +766,15 @@ def engine_can_win(game, player_index, tile=None):
 def engine_perform_call(game, player_index, discarder_index, tile, call_type,
                         engine=None, decide=True, verbose=False):
     """
-    Decide on AND carry out a Pong / Chi / Kong correctly.
-    Use this instead of game.perform_pong / perform_chi / perform_kong.
+    Decide on AND carry out a Pong / Chi / Kong in one step.
+    The simulator's play loop uses decide_call + game.perform_* instead;
+    this helper is for driving a game from outside that loop.
 
-    Fixes compared with the simulator's versions:
-      - removes exactly the right tiles from the hand (no extra tile lost)
-      - Chi uses the sequence the engine picked, not just the first one found
-      - sets game.skip_next_draw = True after Pong/Chi, because the player
-        should discard WITHOUT drawing (the simulator loop must check this).
-        After a Kong it stays False: the player draws a replacement tile.
+      - Chi uses the sequence the engine picked
+      - sets game.skip_next_draw = True after Pong/Chi, so the player
+        discards WITHOUT drawing. After a Kong it stays False and
+        game.kong_replacement is set, so the replacement tile is drawn
+        from the back of the wall.
 
     decide=False skips the AI decision (e.g. the human already said yes).
     Returns True if the call was made.
@@ -617,11 +790,12 @@ def engine_perform_call(game, player_index, discarder_index, tile, call_type,
 
     visible = collect_visible_tiles(game)
     threat = default_threat_level(game.melds, player_index, len(game.wall))
+    ctx = engine_tai_context(game, player_index)
 
     if call_type == "pong":
         if hand.count(tile) < 2:
             return False
-        decision = engine.should_pong(hand, melds, tile, visible, threat) if decide else None
+        decision = engine.should_pong(hand, melds, tile, visible, threat, ctx) if decide else None
         if decide and decision.action != "pong":
             if verbose:
                 print(f"[Strategy] Player {player_index + 1}: {decision.reason}")
@@ -632,7 +806,7 @@ def engine_perform_call(game, player_index, discarder_index, tile, call_type,
     elif call_type == "kong":
         if hand.count(tile) != 3:
             return False
-        decision = engine.should_kong(hand, melds, tile, visible, threat) if decide else None
+        decision = engine.should_kong(hand, melds, tile, visible, threat, ctx) if decide else None
         if decide and decision.action != "kong":
             if verbose:
                 print(f"[Strategy] Player {player_index + 1}: {decision.reason}")
@@ -644,7 +818,7 @@ def engine_perform_call(game, player_index, discarder_index, tile, call_type,
         # only the player right after the discarder can Chi
         if player_index != (discarder_index + 1) % 4:
             return False
-        decision = engine.should_chi(hand, melds, tile, visible, threat)
+        decision = engine.should_chi(hand, melds, tile, visible, threat, ctx)
         if decide and decision.action != "chi":
             if verbose:
                 print(f"[Strategy] Player {player_index + 1}: {decision.reason}")
@@ -668,8 +842,14 @@ def engine_perform_call(game, player_index, discarder_index, tile, call_type,
     melds.append(meld)
     game.current_player = player_index
     game.skip_next_draw = call_type != "kong"
+    if call_type == "kong":
+        game.kong_replacement = True
+        if hasattr(game, "pay_kong"):
+            game.pay_kong(player_index, concealed=False)
 
-    if verbose and decision is not None:
+    if not verbose:
+        return True
+    if decision is not None:
         print(f"[Strategy] Player {player_index + 1}: {decision.reason}")
     print(f"Player {player_index + 1} calls {call_type.capitalize()} on {format_tile(tile)} "
           f"-> meld {[format_tile(t) for t in meld]}, {len(hand)} tiles left in hand")

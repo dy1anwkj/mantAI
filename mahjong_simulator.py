@@ -1,55 +1,23 @@
-import importlib
 import random
+import time
 from collections import Counter
 
 import singapore_rules as sg
-
-try:
-    strategy_mod = importlib.import_module("Decision_Strategy_engine")
-    StrategyEngine = strategy_mod.StrategyEngine
-    collect_visible_tiles = strategy_mod.collect_visible_tiles
-    engine_choose_discard = strategy_mod.engine_choose_discard
-    engine_should_call = strategy_mod.engine_should_call
-    summarize_player_state = strategy_mod.summarize_player_state
-except (ImportError, ModuleNotFoundError):
-    class StrategyEngine:
-        def __init__(self, *args, **kwargs):
-            pass
-
-    def collect_visible_tiles(*args, **kwargs):
-        return []
-
-    def engine_choose_discard(*args, **kwargs):
-        return None
-
-    def engine_should_call(*args, **kwargs):
-        return False
-
-    def summarize_player_state(*args, **kwargs):
-        return {}
-
-try:
-    hand_eval_mod = importlib.import_module("D_hand_eval")
-    analyze_hand = hand_eval_mod.analyze_hand
-    evaluate_discard_quality = hand_eval_mod.evaluate_discard_quality
-    is_winning_hand = hand_eval_mod.is_winning_hand
-    useful_tiles = hand_eval_mod.useful_tiles
-    winning_tiles = hand_eval_mod.winning_tiles
-except (ImportError, ModuleNotFoundError):
-    def analyze_hand(*args, **kwargs):
-        return {}
-
-    def evaluate_discard_quality(*args, **kwargs):
-        return 0
-
-    def is_winning_hand(*args, **kwargs):
-        return False
-
-    def useful_tiles(*args, **kwargs):
-        return []
-
-    def winning_tiles(*args, **kwargs):
-        return []
+from Decision_Strategy_engine import (
+    StrategyEngine,
+    collect_visible_tiles,
+    engine_choose_discard,
+    engine_chi_sequence,
+    engine_should_call,
+    summarize_player_state,
+)
+from D_hand_eval import (
+    analyze_hand,
+    evaluate_discard_quality,
+    is_winning_hand,
+    useful_tiles,
+    winning_tiles,
+)
 
 # Define Mahjong tiles (Bamboo, Dots, Wan, Winds, Dragons)
 bamboo = [('bamboo', i) for i in range(1, 10)]
@@ -83,7 +51,34 @@ class MahjongGame:
         self.strategy = StrategyEngine()
         self.skip_next_draw = False
         self.kong_replacement = False
+        self.kong_draw = False      # current player's last tile was a Kong replacement
+        self.robbing_kong = False   # a promoted Kong is being offered to the other players
+        self.instant = Counter()    # instant payments so far (Kongs, animals, bonus sets)
         self.result = None  # set when someone wins
+        # Who controls Player 1 (index 0): "human" prompts at the keyboard,
+        # "engine" lets the Decision / Strategy engine play automatically.
+        # Players 2-4 always act randomly.
+        self.player1 = "human"
+        self.verbose = True
+        self.turns = 0
+
+    def say(self, *args, **kwargs):
+        if self.verbose:
+            print(*args, **kwargs)
+
+    def check_invariants(self, discarding_player=None):
+        """Every tile is accounted for and every hand has a legal size."""
+        everything = list(self.wall)
+        for i in range(4):
+            everything += self.hands[i] + self.discards[i] + self.bonus[i]
+            for meld in self.melds[i]:
+                everything += meld
+        assert Counter(everything) == Counter(all_tiles), "tile count mismatch"
+        for i in range(4):
+            assert not any(sg.is_bonus(t) for t in self.hands[i]), "bonus tile left in hand"
+            expected = 14 if i == discarding_player else 13
+            assert self.effective_hand_size(i) == expected, (
+                f"Player {i + 1} holds {self.effective_hand_size(i)} tiles, expected {expected}")
 
     @property
     def prevailing_wind(self):
@@ -104,9 +99,21 @@ class MahjongGame:
                 break
 
     def reveal_bonus(self, player_index, tile):
+        earned = sg.bonus_payments(self.bonus[player_index], tile)
         self.hands[player_index].remove(tile)
         self.bonus[player_index].append(tile)
-        print(f"Player {player_index + 1} reveals {self.format_tile(tile)} and draws a replacement.")
+        self.say(f"Player {player_index + 1} reveals {self.format_tile(tile)} and draws a replacement.")
+        for reason, units in earned:
+            self.pay_instant(player_index, units, reason)
+
+    def pay_instant(self, receiver, units_each, reason):
+        """Every opponent pays `receiver` straight away (Singapore instant payment)."""
+        self.instant.update(sg.instant_payment(receiver, units_each))
+        self.say(f"Instant payment: {reason}. Each player pays Player {receiver + 1} {units_each} unit(s).")
+
+    def pay_kong(self, player_index, concealed):
+        kind = "concealed" if concealed else "exposed"
+        self.pay_instant(player_index, sg.kong_payment(concealed), f"{kind} Kong")
 
     def replace_bonus_tiles(self, player_index):
         """Swap every bonus tile in hand for a tile from the back of the wall.
@@ -127,7 +134,7 @@ class MahjongGame:
         player = self.current_player
         while True:
             if not self.wall:
-                print("Wall depleted! Round ends in draw.")
+                self.say("Wall depleted! Round ends in draw.")
                 return None
             tile = self.wall.pop(0) if from_back else self.wall.pop()
             self.hands[player].append(tile)
@@ -136,18 +143,19 @@ class MahjongGame:
             self.reveal_bonus(player, tile)
             from_back = True
         if player == 0:
-            print(f"You draw {self.format_tile(tile)}")
+            self.say(f"You draw {self.format_tile(tile)}")
         else:
-            print(f"Player {player + 1} draws a tile")
+            self.say(f"Player {player + 1} draws a tile")
         return tile
 
     def discard_tile(self, tile):
         if tile not in self.hands[self.current_player]:
-            print(f"Error: Player {self.current_player + 1} tried to discard a tile not in hand!")
+            self.say(f"Error: Player {self.current_player + 1} tried to discard a tile not in hand!")
             return False
         self.hands[self.current_player].remove(tile)
         self.discards[self.current_player].append(tile)
-        print(f"Player {self.current_player + 1} discards {self.format_tile(tile)}")
+        self.kong_draw = False
+        self.say(f"Player {self.current_player + 1} discards {self.format_tile(tile)}")
         # Do not immediately advance turn here; wait for calls
         return True
 
@@ -177,7 +185,7 @@ class MahjongGame:
     def show_hands(self):
         for i, hand in enumerate(self.hands):
             formatted = [self.format_tile(t) for t in self.sort_tiles(hand)]
-            print(f"Player {i + 1} hand: {formatted}")
+            self.say(f"Player {i + 1} hand: {formatted}")
 
     def get_concealed_hand_size(self, player_index):
         return len(self.hands[player_index])
@@ -199,30 +207,30 @@ class MahjongGame:
         for meld in self.melds[player_index]:
             melds.append([self.format_tile(t) for t in self.sort_tiles(meld)])
 
-        print(f"Player {player_index + 1} concealed hand ({len(hand)} tiles): {[self.format_tile(t) for t in hand]}")
+        self.say(f"Player {player_index + 1} concealed hand ({len(hand)} tiles): {[self.format_tile(t) for t in hand]}")
         if melds:
-            print(f"Player {player_index + 1} current melds: {melds}")
-            print(f"Player {player_index + 1} total active tiles: {self.get_total_active_tiles(player_index)}")
+            self.say(f"Player {player_index + 1} current melds: {melds}")
+            self.say(f"Player {player_index + 1} total active tiles: {self.get_total_active_tiles(player_index)}")
         else:
-            print(f"Player {player_index + 1} current melds: []")
-            print(f"Player {player_index + 1} total active tiles: {len(hand)}")
-        print(f"Seat: {self.seat(player_index)} ({sg.WINDS[self.seat(player_index) - 1].capitalize()}), "
+            self.say(f"Player {player_index + 1} current melds: []")
+            self.say(f"Player {player_index + 1} total active tiles: {len(hand)}")
+        self.say(f"Seat: {self.seat(player_index)} ({sg.WINDS[self.seat(player_index) - 1].capitalize()}), "
               f"bonus tiles: {[self.format_tile(t) for t in self.bonus[player_index]]}")
 
     def show_discards(self):
         for i, discard in enumerate(self.discards):
             formatted = [self.format_tile(t) for t in discard]
-            print(f"Player {i + 1} discards: {formatted}")
+            self.say(f"Player {i + 1} discards: {formatted}")
 
     def show_melds(self):
         for i, meld_list in enumerate(self.melds):
             if meld_list:
                 formatted_melds = [[self.format_tile(t) for t in meld] for meld in meld_list]
-                print(f"Player {i + 1} melds: {formatted_melds}")
+                self.say(f"Player {i + 1} melds: {formatted_melds}")
             else:
-                print(f"Player {i + 1} has no melds.")
+                self.say(f"Player {i + 1} has no melds.")
             if self.bonus[i]:
-                print(f"Player {i + 1} bonus tiles: {[self.format_tile(t) for t in self.bonus[i]]}")
+                self.say(f"Player {i + 1} bonus tiles: {[self.format_tile(t) for t in self.bonus[i]]}")
 
     def is_pong(self, tiles):
         return len(tiles) == 3 and len(set(tiles)) == 1
@@ -293,8 +301,8 @@ class MahjongGame:
         self.expose_meld_from_hand(player_index, [tile, tile])
         self.discards[discarder_index].pop()
         self.melds[player_index].append([tile] * 3)
-        print(f"Player {player_index + 1} calls Pong on {self.format_tile(tile)}")
-        print(f"Player {player_index + 1} now has {len(self.hands[player_index])} concealed tiles left after exposing the meld.")
+        self.say(f"Player {player_index + 1} calls Pong on {self.format_tile(tile)}")
+        self.say(f"Player {player_index + 1} now has {len(self.hands[player_index])} concealed tiles left after exposing the meld.")
         self.current_player = player_index
         self.skip_next_draw = True
         return True
@@ -338,8 +346,8 @@ class MahjongGame:
         self.expose_meld_from_hand(player_index, seq)
         self.discards[discarder_index].pop()
         self.melds[player_index].append(meld_tiles)
-        print(f"Player {player_index + 1} calls Chi on {self.format_tile(tile)} with sequence {[self.format_tile(t) for t in seq]}")
-        print(f"Player {player_index + 1} now has {len(self.hands[player_index])} concealed tiles left after exposing the meld.")
+        self.say(f"Player {player_index + 1} calls Chi on {self.format_tile(tile)} with sequence {[self.format_tile(t) for t in seq]}")
+        self.say(f"Player {player_index + 1} now has {len(self.hands[player_index])} concealed tiles left after exposing the meld.")
         self.current_player = player_index
         self.skip_next_draw = True
         return True
@@ -353,17 +361,51 @@ class MahjongGame:
         self.expose_meld_from_hand(player_index, [tile, tile, tile])
         self.discards[discarder_index].pop()
         self.melds[player_index].append([tile] * 4)
-        print(f"Player {player_index + 1} calls Kong on {self.format_tile(tile)}")
-        print(f"Player {player_index + 1} now has {len(self.hands[player_index])} concealed tiles left after exposing the meld.")
+        self.say(f"Player {player_index + 1} calls Kong on {self.format_tile(tile)}")
+        self.say(f"Player {player_index + 1} now has {len(self.hands[player_index])} concealed tiles left after exposing the meld.")
         self.current_player = player_index
         self.skip_next_draw = False
         self.kong_replacement = True
+        self.pay_kong(player_index, concealed=False)
+        return True
+
+    def self_kong_options(self, player_index):
+        """Tiles the player may Kong on their own turn: four concealed copies,
+        or one copy that upgrades an exposed Pong."""
+        hand = self.hands[player_index]
+        counts = Counter(hand)
+        options = [t for t, c in counts.items() if c == 4]
+        for meld in self.melds[player_index]:
+            if len(meld) == 3 and meld[0] == meld[1] == meld[2] and meld[0] in counts:
+                options.append(meld[0])
+        return self.sort_tiles(options)
+
+    def perform_self_kong(self, player_index, tile):
+        """Declare a concealed or promoted Kong. The caller then draws the
+        replacement tile from the back of the wall."""
+        hand = self.hands[player_index]
+        if hand.count(tile) == 4:
+            for _ in range(4):
+                hand.remove(tile)
+            self.melds[player_index].append([tile] * 4)
+            self.say(f"Player {player_index + 1} declares a concealed Kong of {self.format_tile(tile)}")
+            self.pay_kong(player_index, concealed=True)
+        else:
+            meld = next((m for m in self.melds[player_index]
+                         if len(m) == 3 and m[0] == m[1] == m[2] == tile), None)
+            if meld is None or tile not in hand:
+                return False
+            hand.remove(tile)
+            meld.append(tile)
+            self.say(f"Player {player_index + 1} adds {self.format_tile(tile)} to their Pong to make a Kong")
+            self.pay_kong(player_index, concealed=False)
         return True
 
     def score_win(self, player_index, winning_tile=None):
         """Tai for the player's hand, optionally completed by another player's
         discard. Returns None if the hand is not a winning hand."""
         concealed = list(self.hands[player_index])
+        on_own_turn = winning_tile is None
         if winning_tile is None:
             # Self-drawn: the most recent draw is the winning tile.
             winning_tile = concealed[-1] if concealed else None
@@ -379,6 +421,20 @@ class MahjongGame:
         return sg.score_hand(
             concealed, melds, self.bonus[player_index], self.seat(player_index),
             self.prevailing_wind, winning_tiles(before, melds),
+            self.win_situation(player_index, self_drawn=on_own_turn),
+        )
+
+    def win_situation(self, player_index, self_drawn):
+        """Situational tai for a win happening right now (see sg.situation_tai)."""
+        no_calls = not any(self.melds)
+        first_go = self.turns == 1 and no_calls   # still the dealer's opening turn
+        return sg.situation_tai(
+            kong_replacement=self_drawn and self.kong_draw,
+            robbed_kong=not self_drawn and self.robbing_kong,
+            last_tile=self_drawn and not self.wall,
+            heavenly=self_drawn and first_go and player_index == self.dealer,
+            earthly=(not self_drawn and first_go and not self.robbing_kong
+                     and self.current_player == self.dealer),
         )
 
     def can_hu(self, player_index, discard=None):
@@ -494,61 +550,248 @@ def choose_chi_sequence(game, tile):
         print("Invalid choice.")
 
 
-def find_discard_winner(game, tile):
-    discarder = game.current_player
+# --------------------------------------------------------------------------
+# Who controls a seat
+# --------------------------------------------------------------------------
+def is_human(game, player):
+    return player == 0 and getattr(game, "player1", "human") == "human"
+
+
+def is_engine(game, player):
+    return player == 0 and getattr(game, "player1", "human") == "engine"
+
+
+def is_ml(game, player):
+    """Player 1 driven by a trained machine-learning policy (see mantai_ml)."""
+    return player == 0 and getattr(game, "player1", "human") == "ml"
+
+
+def controller_name(game, player):
+    if player != 0:
+        return "random"
+    return getattr(game, "player1", "human")
+
+
+def _record(game, player, kind, tile, **extra):
+    """Pass a decision to game.recorder (set by mantai_ml to log gameplay)."""
+    recorder = getattr(game, "recorder", None)
+    if recorder is not None:
+        recorder.on_decision(game, player, kind, tile, **extra)
+
+
+def decide_call(game, player, tile, call_type, prompt):
+    """Yes / no on a call. Human: ask. Engine: Decision / Strategy engine.
+    ML: trained policy. Players 2-4: random, at their own call rate."""
+    if is_human(game, player):
+        taken = yes_no_prompt(prompt)
+    elif is_ml(game, player):
+        taken = game.ml_policy.should_call(game, player, tile, call_type)
+    elif is_engine(game, player):
+        taken = engine_should_call(game, player, tile, call_type, game.strategy)
+    else:
+        taken = ai_should_call(game, player, tile, call_type)
+    _record(game, player, "call", tile, call_type=call_type, taken=bool(taken))
+    return taken
+
+
+def player_discard(game, player):
+    if is_human(game, player):
+        tile = choose_discard_tile(game)
+    elif is_ml(game, player):
+        tile = game.ml_policy.choose_discard(game, player)
+        game.say(f"Player 1 (ML) discards {game.format_tile(tile)}")
+    elif is_engine(game, player):
+        tile = engine_choose_discard(game, player, game.strategy)
+        game.say(f"Player 1 (engine) discards {game.format_tile(tile)}")
+    else:
+        tile = ai_choose_discard(game, player)
+        game.say(f"Player {player + 1} (AI) discards {game.format_tile(tile)}")
+    _record(game, player, "discard", tile)
+    return tile
+
+
+# --------------------------------------------------------------------------
+# Wins
+# --------------------------------------------------------------------------
+def find_discard_winner(game, tile, discarder=None):
+    """First player after the discarder, in turn order, who can and will win
+    on `tile`. Winning is a rule, not a strategy choice, so AI players and the
+    engine always take a legal win; a human is asked."""
+    discarder = game.current_player if discarder is None else discarder
     for i in range(1, 4):
         player = (discarder + i) % 4
         if not game.can_hu(player, tile):
             continue
-        if player == 0:
+        if is_human(game, player):
             tai = game.score_win(0, tile)["tai"]
             if yes_no_prompt(f"You can Hu on Player {discarder + 1}'s {game.format_tile(tile)} ({tai} tai)! Declare win?"):
                 return player
         else:
-            # Winning is a rule, not a strategy choice, so AI players always take it.
             return player
     return None
 
 
 def announce_win(game, winner, score, self_drawn, shooter=None, winning_tile=None):
-    who = "You" if winner == 0 else f"Player {winner + 1}"
+    who = "You" if is_human(game, winner) else f"Player {winner + 1}"
     if self_drawn:
-        print(f"\n{who} won by self-draw!")
+        game.say(f"\n{who} won by self-draw!")
     else:
-        shooter_name = "you" if shooter == 0 else f"Player {shooter + 1}"
-        print(f"\n{who} won on {shooter_name}'s discard ({game.format_tile(winning_tile)}). Shooter: {shooter_name}.")
-    print(f"Winning hand: {[game.format_tile(t) for t in game.sort_tiles(game.hands[winner])]}")
+        shooter_name = "you" if is_human(game, shooter) else f"Player {shooter + 1}"
+        game.say(f"\n{who} won on {shooter_name}'s discard ({game.format_tile(winning_tile)}). Shooter: {shooter_name}.")
+    game.say(f"Winning hand: {[game.format_tile(t) for t in game.sort_tiles(game.hands[winner])]}")
     if game.melds[winner]:
-        print(f"Exposed melds: {[[game.format_tile(t) for t in game.sort_tiles(m)] for m in game.melds[winner]]}")
-    print(f"Tai: {score['tai']}")
+        game.say(f"Exposed melds: {[[game.format_tile(t) for t in game.sort_tiles(m)] for m in game.melds[winner]]}")
+    game.say(f"Tai: {score['tai']}")
     for description, tai in score["items"]:
-        print(f"  +{tai}  {description}")
+        game.say(f"  +{tai}  {description}")
     for player, units in sorted(sg.payouts(score["tai"], winner, self_drawn, shooter).items()):
-        label = "You" if player == 0 else f"Player {player + 1}"
-        print(f"  {label}: {units:+d} units")
-    game.result = {"winner": winner, "self_drawn": self_drawn, "shooter": shooter, "score": score}
+        label = "You" if is_human(game, player) else f"Player {player + 1}"
+        game.say(f"  {label}: {units:+d} units")
+    game.result = {"winner": winner, "self_drawn": self_drawn, "shooter": shooter,
+                   "score": score, "turns": game.turns}
 
 
-def main():
-    import time
-    game = MahjongGame()
-    game.deal()
-    dealer_name = "You are" if game.dealer == 0 else f"Player {game.dealer + 1} is"
-    print(f"\n{dealer_name} the dealer (East). Prevailing wind: {game.prevailing_wind.capitalize()}.")
-    print(f"Your seat: {game.seat(0)} ({sg.WINDS[game.seat(0) - 1].capitalize()})")
-    print("\nInitial public state:")
-    game.show_melds()
-    game.show_discards()
-    print("=" * 50)
+def try_self_drawn_win(game, player):
+    if not game.can_hu(player):
+        return False
+    if is_human(game, player):
+        tai = game.score_win(player)["tai"]
+        if not yes_no_prompt(f"You can Hu ({tai} tai)! Declare win?"):
+            return False
+        game.say("You declared Hu and won!")
+    else:
+        game.say(f"Player {player + 1} declares Hu and wins!")
+    announce_win(game, player, game.score_win(player), self_drawn=True)
+    return True
+
+
+def win_on_discard(game, winner, shooter, tile, from_hand=False):
+    """Hand `tile` to the winner. from_hand=True when it is robbed from a Kong."""
+    score = game.score_win(winner, tile)
+    if from_hand:
+        game.hands[shooter].remove(tile)
+    else:
+        game.discards[shooter].pop()
+    game.hands[winner].append(tile)
+    announce_win(game, winner, score, self_drawn=False, shooter=shooter, winning_tile=tile)
+
+
+# --------------------------------------------------------------------------
+# Kongs on your own turn (concealed or promoted), with robbing the Kong
+# --------------------------------------------------------------------------
+def self_turn_kongs(game, player):
+    """Returns "win", "draw" or None (carry on and discard)."""
+    while True:
+        chosen = None
+        for tile in game.self_kong_options(player):
+            if decide_call(game, player, tile, "self_kong",
+                           f"You can Kong {game.format_tile(tile)}. Declare Kong?"):
+                chosen = tile
+                break
+        if chosen is None:
+            return None
+
+        promoted = game.hands[player].count(chosen) != 4
+        if promoted:
+            # Singapore: another player may rob a promoted Kong to win.
+            game.robbing_kong = True
+            robber = find_discard_winner(game, chosen, discarder=player)
+            if robber is not None:
+                game.say(f"Player {robber + 1} robs the Kong!")
+                win_on_discard(game, robber, player, chosen, from_hand=True)
+                return "win"
+            game.robbing_kong = False
+
+        game.perform_self_kong(player, chosen)
+        drawn = game.draw_tile(from_back=True)
+        game.kong_replacement = False
+        game.kong_draw = True
+        if drawn is None:
+            game.say("Wall exhausted. Game ends in a draw.")
+            return "draw"
+        if try_self_drawn_win(game, player):
+            return "win"
+
+
+# --------------------------------------------------------------------------
+# Claims on a discard: Kong > Pong > Chi
+# --------------------------------------------------------------------------
+def resolve_claims(game, discard_tile):
+    discarder = game.current_player
+    for i in range(1, 4):
+        player = (discarder + i) % 4
+        if game.can_kong(player, discard_tile) and decide_call(
+                game, player, discard_tile, "kong",
+                f"You can Kong {game.format_tile(discard_tile)}. Call Kong?"):
+            if game.perform_kong(player, discarder, discard_tile):
+                game.say(f"Kong called by Player {player + 1}, turn goes to them.")
+                return True
+
+    for i in range(1, 4):
+        player = (discarder + i) % 4
+        if game.can_pong(player, discard_tile) and decide_call(
+                game, player, discard_tile, "pong",
+                f"You can Pong {game.format_tile(discard_tile)}. Call Pong?"):
+            if game.perform_pong(player, discarder, discard_tile):
+                game.say(f"Pong called by Player {player + 1}, turn goes to them.")
+                return True
+
+    next_player = (discarder + 1) % 4
+    if game.can_chi(next_player, discard_tile):
+        if is_engine(game, next_player):
+            seq = engine_chi_sequence(game, next_player, discard_tile, game.strategy)
+            call_chi = seq is not None
+            _record(game, next_player, "call", discard_tile, call_type="chi", taken=call_chi)
+        elif is_ml(game, next_player):
+            call_chi = decide_call(game, next_player, discard_tile, "chi", "")
+            seq = game.ml_policy.chi_sequence(game, next_player, discard_tile) if call_chi else None
+        else:
+            call_chi = decide_call(game, next_player, discard_tile, "chi",
+                                   f"You can Chi {game.format_tile(discard_tile)}. Call Chi?")
+            seq = choose_chi_sequence(game, discard_tile) if (call_chi and is_human(game, next_player)) else None
+        if call_chi and game.perform_chi(next_player, discarder, discard_tile, seq):
+            game.say(f"Chi called by Player {next_player + 1}, turn goes to them.")
+            return True
+    return False
+
+
+# --------------------------------------------------------------------------
+# One full game
+# --------------------------------------------------------------------------
+def play_game(game=None, player1="human", delay=1.0, verbose=True, check=False, setup=None):
+    """
+    Play one hand of Singapore Mahjong and return the finished game.
+    player1 : "human" (keyboard) or "engine" (Decision / Strategy engine)
+    delay   : seconds to pause between turns (0 for simulations)
+    check   : assert tile / hand-size invariants after every discard
+    """
+    if game is None:
+        game = MahjongGame()
+        game.player1 = player1
+        game.verbose = verbose
+        if setup is not None:
+            setup(game)         # e.g. attach a recorder or an ML policy
+        game.deal()
+    human = game.player1 == "human"
+
+    dealer_name = "You are" if human and game.dealer == 0 else f"Player {game.dealer + 1} is"
+    game.say(f"\n{dealer_name} the dealer (East). Prevailing wind: {game.prevailing_wind.capitalize()}.")
+    game.say(f"Player 1 seat: {game.seat(0)} ({sg.WINDS[game.seat(0) - 1].capitalize()})")
+    if game.verbose:
+        print("\nInitial public state:")
+        game.show_melds()
+        game.show_discards()
+    game.say("=" * 50)
 
     first_turn = True
-
     while True:
-        print("\n" + "=" * 50)
-        print(f"--- Player {game.current_player + 1}'s turn ---")
-        print("=" * 50 + "\n")
+        player = game.current_player
+        game.turns += 1
+        game.say("\n" + "=" * 50)
+        game.say(f"--- Player {player + 1}'s turn ---")
+        game.say("=" * 50 + "\n")
 
-        if game.current_player == 0:
+        if is_human(game, player):
             triplets, leftover = game.find_completed_sets(0)
             if triplets:
                 print("Completed sets:")
@@ -556,117 +799,176 @@ def main():
                     print("  -", [game.format_tile(t) for t in s])
             print("Remaining hand tiles:", [game.format_tile(t) for t in leftover])
 
-        if first_turn and game.current_player == game.dealer:
-            print("Dealer discards first without drawing.")
-            first_turn = False
+        claimed = False
+        # Only the dealer's opening turn skips the draw; a game resumed mid-way
+        # (tests, recorded positions) has no such turn.
+        opening, first_turn = first_turn and player == game.dealer, False
+        if opening:
+            game.say("Dealer discards first without drawing.")
         elif game.skip_next_draw:
-            print(f"Player {game.current_player + 1} takes the exposed discard and does not draw a new tile.")
+            # Took a discard for Pong / Chi: no draw, and no self-drawn win.
+            game.say(f"Player {player + 1} takes the exposed discard and does not draw a new tile.")
             game.skip_next_draw = False
+            claimed = True
         else:
+            game.kong_draw = game.kong_replacement
             drawn = game.draw_tile(from_back=game.kong_replacement)
             game.kong_replacement = False
             if drawn is None:
-                print("Wall exhausted. Game ends in a draw.")
+                game.say("Wall exhausted. Game ends in a draw.")
                 break
 
-        if game.current_player == 0:
+        if is_human(game, player):
             game.show_player_state(0)
-        hints = game.get_hints(game.current_player) if game.current_player == 0 else []
-        if hints and not (first_turn and game.current_player == game.dealer):
-            print("Hints:")
-            for h in hints:
-                print("  -", h)
+            hints = game.get_hints(0)
+            if hints:
+                print("Hints:")
+                for h in hints:
+                    print("  -", h)
 
-        # Self-drawn Hu
-        if game.current_player == 0:
-            if game.can_hu(0):
-                tai = game.score_win(0)["tai"]
-                if yes_no_prompt(f"You can Hu ({tai} tai)! Declare win?"):
-                    print("You declared Hu and won!")
-                    announce_win(game, 0, game.score_win(0), self_drawn=True)
-                    break
-            discard_tile = choose_discard_tile(game)
-        else:
-            if game.can_hu(game.current_player):
-                print(f"Player {game.current_player + 1} declares Hu and wins!")
-                announce_win(game, game.current_player, game.score_win(game.current_player), self_drawn=True)
+        if not claimed:
+            if try_self_drawn_win(game, player):
+                break
+            outcome = self_turn_kongs(game, player)
+            if outcome in ("win", "draw"):
                 break
 
-            discard_tile = ai_choose_discard(game, game.current_player)
-            print(f"Player {game.current_player + 1} (AI) discards {game.format_tile(discard_tile)}")
-
+        discard_tile = player_discard(game, player)
         game.discard_tile(discard_tile)
+        if check:
+            game.check_invariants()
 
-        # Hu on the discard beats every other call. The first player after the
-        # discarder, in turn order, gets it. The discarder is the "shooter".
+        # Hu on the discard beats every other call. The discarder is the shooter.
         winner = find_discard_winner(game, discard_tile)
         if winner is not None:
-            shooter = game.current_player
-            score = game.score_win(winner, discard_tile)
-            game.discards[shooter].pop()
-            game.hands[winner].append(discard_tile)
-            announce_win(game, winner, score, self_drawn=False, shooter=shooter, winning_tile=discard_tile)
+            win_on_discard(game, winner, game.current_player, discard_tile)
             break
 
-        pong_called = False
-        kong_called = False
-        chi_called = False
-
-        # Kong calls: AI players auto-decide, human still prompts only for their own turn
-        for i in range(1, 4):
-            player = (game.current_player + i) % 4
-            if game.can_kong(player, discard_tile):
-                if player == 0:
-                    call_kong = yes_no_prompt(f"You can Kong {game.format_tile(discard_tile)}. Call Kong?")
-                else:
-                    call_kong = ai_should_call(game, player, discard_tile, "kong")
-
-                if call_kong:
-                    kong_called = game.perform_kong(player, game.current_player, discard_tile)
-                    if kong_called:
-                        print(f"Kong called by Player {player + 1}, turn goes to them.")
-                        break
-
-        # Pong calls if no Kong
-        if not kong_called:
-            for i in range(1, 4):
-                player = (game.current_player + i) % 4
-                if game.can_pong(player, discard_tile):
-                    if player == 0:
-                        call_pong = yes_no_prompt(f"You can Pong {game.format_tile(discard_tile)}. Call Pong?")
-                    else:
-                        call_pong = ai_should_call(game, player, discard_tile, "pong")
-
-                    if call_pong:
-                        pong_called = game.perform_pong(player, game.current_player, discard_tile)
-                        if pong_called:
-                            print(f"Pong called by Player {player + 1}, turn goes to them.")
-                            break
-
-        # Chi calls if no Kong or Pong, only next player on the left
-        if not kong_called and not pong_called:
-            next_player = (game.current_player + 1) % 4
-            if game.can_chi(next_player, discard_tile):
-                if next_player == 0:
-                    call_chi = yes_no_prompt(f"You can Chi {game.format_tile(discard_tile)}. Call Chi?")
-                else:
-                    call_chi = ai_should_call(game, next_player, discard_tile, "chi")
-
-                if call_chi:
-                    seq = choose_chi_sequence(game, discard_tile) if next_player == 0 else None
-                    chi_called = game.perform_chi(next_player, game.current_player, discard_tile, seq)
-                    if chi_called:
-                        print(f"Chi called by Player {next_player + 1}, turn goes to them.")
-
-        if not kong_called and not pong_called and not chi_called:
+        if not resolve_claims(game, discard_tile):
             game.current_player = (game.current_player + 1) % 4
 
-        game.show_discards()
-        game.show_melds()
+        if game.verbose:
+            game.show_discards()
+            game.show_melds()
+        if delay:
+            time.sleep(delay)
 
-        time.sleep(1)
+    if check:
+        if game.result is None:
+            game.check_invariants()   # draw: everyone is left holding 13
+        else:
+            _check_result(game)
+    if game.instant:
+        game.say("Instant payments this game:")
+        for p in range(4):
+            game.say(f"  Player {p + 1}: {game.instant[p]:+d} units")
+    game.say("\nGame Over.")
+    recorder = getattr(game, "recorder", None)
+    if recorder is not None:
+        recorder.on_game_end(game)
+    return game
 
-    print("\nGame Over.")
+
+def _check_result(game):
+    r = game.result
+    winner = r["winner"]
+    assert game.check_win(game.hands[winner], game.melds[winner]), "winner's hand is not complete"
+    assert r["score"]["tai"] >= sg.MIN_TAI, "win below minimum tai"
+    assert r["self_drawn"] == (r["shooter"] is None)
+    assert r["shooter"] != winner
+    everything = list(game.wall)
+    for i in range(4):
+        everything += game.hands[i] + game.discards[i] + game.bonus[i]
+        for meld in game.melds[i]:
+            everything += meld
+    assert Counter(everything) == Counter(all_tiles), "tile count mismatch"
+
+
+def main():
+    """Interactive game: you are Player 1."""
+    play_game(player1="human", delay=1.0)
+
+
+# --------------------------------------------------------------------------
+# Batch simulation: Player 1 = strategy engine, Players 2-4 = random
+# --------------------------------------------------------------------------
+def simulate(n_games=1000, seed=None, check=True, progress=True, player1="engine", setup=None):
+    import traceback
+    global rng
+    if seed is not None:
+        rng = random.Random(seed)
+
+    stats = {
+        "games": n_games, "p1_wins": 0, "p1_self_drawn": 0, "p1_on_discard": 0,
+        "other_wins": Counter(), "draws": 0, "p1_shooter": 0, "errors": [],
+        "p1_tai": Counter(), "turns": [], "p1_units": 0, "p1_instant": 0,
+    }
+    started = time.time()
+    for g in range(n_games):
+        try:
+            game = play_game(player1=player1, delay=0, verbose=False, check=check, setup=setup)
+        except Exception:
+            stats["errors"].append(traceback.format_exc())
+            continue
+        stats["turns"].append(game.turns)
+        stats["p1_instant"] += game.instant[0]
+        stats["p1_units"] += game.instant[0]
+        r = game.result
+        if r is None:
+            stats["draws"] += 1
+            continue
+        pay = sg.payouts(r["score"]["tai"], r["winner"], r["self_drawn"], r["shooter"])
+        stats["p1_units"] += pay.get(0, 0)
+        if r["winner"] == 0:
+            stats["p1_wins"] += 1
+            stats["p1_tai"][r["score"]["tai"]] += 1
+            stats["p1_self_drawn" if r["self_drawn"] else "p1_on_discard"] += 1
+        else:
+            stats["other_wins"][r["winner"] + 1] += 1
+            if r["shooter"] == 0:
+                stats["p1_shooter"] += 1
+        if progress and (g + 1) % 100 == 0:
+            print(f"  {g + 1}/{n_games} games, Player 1 won {stats['p1_wins']}")
+    stats["seconds"] = time.time() - started
+    return stats
+
+
+def print_report(stats, label="Player 1 = strategy engine"):
+    n = stats["games"]
+    pct = lambda k: 100.0 * k / n if n else 0.0
+    print(f"\nSimulated {n} games in {stats['seconds']:.1f}s "
+          f"({label}, Players 2-4 = random)")
+    print(f"  Player 1 wins      : {stats['p1_wins']:5d}  ({pct(stats['p1_wins']):.1f}%)")
+    print(f"    self-drawn       : {stats['p1_self_drawn']:5d}")
+    print(f"    on a discard     : {stats['p1_on_discard']:5d}")
+    for p in (2, 3, 4):
+        print(f"  Player {p} wins      : {stats['other_wins'][p]:5d}  ({pct(stats['other_wins'][p]):.1f}%)")
+    print(f"  Draws (wall empty) : {stats['draws']:5d}  ({pct(stats['draws']):.1f}%)")
+    print(f"  Player 1 was shooter: {stats['p1_shooter']} times")
+    print(f"  Player 1 net units : {stats['p1_units']:+d}  (instant payments {stats['p1_instant']:+d})")
+    if stats["p1_tai"]:
+        print("  Player 1 winning tai: " + ", ".join(f"{t} tai x{c}" for t, c in sorted(stats["p1_tai"].items())))
+    if stats["turns"]:
+        print(f"  Average turns/game : {sum(stats['turns']) / len(stats['turns']):.1f}")
+    print(f"  Crashes / rule violations: {len(stats['errors'])}")
+    for err in stats["errors"][:3]:
+        print(err)
+
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    parser = argparse.ArgumentParser(description="Singapore Mahjong simulator")
+    parser.add_argument("--simulate", type=int, metavar="N",
+                        help="run N games with the engine as Player 1 and print statistics")
+    parser.add_argument("--seed", type=int, help="random seed for reproducible simulations")
+    parser.add_argument("--auto", action="store_true",
+                        help="watch one game with the engine playing Player 1")
+    args = parser.parse_args()
+    if args.simulate:
+        print_report(simulate(args.simulate, seed=args.seed))
+    elif args.auto:
+        if args.seed is not None:
+            rng = random.Random(args.seed)
+        play_game(player1="engine", delay=0)
+    else:
+        main()
