@@ -378,15 +378,21 @@ class Decision:
 # The engine
 # --------------------------------------------------------------------------
 class StrategyEngine:
-    def __init__(self, weights=None, danger_fn=None):
+    def __init__(self, weights=None, danger_fn=None, opponent_model=None):
         """
-        weights   : dict overriding DEFAULT_WEIGHTS
-        danger_fn : optional function(tile, hand, visible_tiles) -> 0..1
-                    (lets Part 4 plug in a better opponent model)
+        weights        : dict overriding DEFAULT_WEIGHTS
+        danger_fn      : optional function(tile, hand, visible_tiles) -> 0..1
+        opponent_model : optional R_opponent_analysis.OpponentAnalyzer. The
+                         game hooks below refresh it from the table before
+                         each decision and use its per-opponent danger and
+                         threat instead of the simple defaults.
         """
         self.w = dict(DEFAULT_WEIGHTS)
         if weights:
             self.w.update(weights)
+        self.opponent_model = opponent_model
+        if danger_fn is None and opponent_model is not None:
+            danger_fn = opponent_model.danger_estimate
         self.danger_fn = danger_fn or default_tile_danger
 
     # ---------------- Hu ----------------
@@ -660,6 +666,16 @@ def collect_visible_tiles(game):
     return visible
 
 
+def table_threat(game, player_index, engine=None):
+    """How close the other players look to winning (0..1). With an opponent
+    model, refresh it from the table first so its danger estimates are current."""
+    model = getattr(engine or _engine, "opponent_model", None)
+    if model is None:
+        return default_threat_level(game.melds, player_index, len(game.wall))
+    model.update_from_game(game, player_index)
+    return model.threat_level()
+
+
 def summarize_player_state(game, player_index, engine=None):
     """Return the combined evaluator + strategy view for a player's hand."""
     engine = engine or _engine
@@ -673,7 +689,7 @@ def summarize_player_state(game, player_index, engine=None):
         "visible_tiles": visible_tiles,
         "analysis": analysis,
         "best_discard": discard_tile,
-        "threat": default_threat_level(game.melds, player_index, len(game.wall)),
+        "threat": table_threat(game, player_index, engine),
     }
 
 
@@ -689,16 +705,20 @@ def engine_tai_context(game, player_index):
     )
 
 
+def engine_discard_decision(game, player_index, engine=None):
+    """The engine's discard Decision; details ranks every distinct discard, best first."""
+    engine = engine or _engine
+    threat = table_threat(game, player_index, engine)
+    return engine.choose_discard(game.hands[player_index], game.melds[player_index],
+                                 collect_visible_tiles(game), threat,
+                                 engine_tai_context(game, player_index))
+
+
 def engine_choose_discard(game, player_index, engine=None, verbose=False):
     """Drop-in replacement for ai_choose_discard(game, player_index)."""
-    engine = engine or _engine
-    hand = game.hands[player_index]
-    if not hand:
+    if not game.hands[player_index]:
         return None
-    threat = default_threat_level(game.melds, player_index, len(game.wall))
-    decision = engine.choose_discard(hand, game.melds[player_index],
-                                     collect_visible_tiles(game), threat,
-                                     engine_tai_context(game, player_index))
+    decision = engine_discard_decision(game, player_index, engine)
     if verbose:
         print(f"[Strategy] Player {player_index + 1}: {decision.reason}")
     return decision.tile
@@ -710,7 +730,7 @@ def engine_should_call(game, player_index, tile, call_type, engine=None, verbose
     hand = game.hands[player_index]
     melds = game.melds[player_index]
     visible = collect_visible_tiles(game)
-    threat = default_threat_level(game.melds, player_index, len(game.wall))
+    threat = table_threat(game, player_index, engine)
     ctx = engine_tai_context(game, player_index)
 
     if call_type == "hu":
@@ -745,7 +765,7 @@ def engine_chi_sequence(game, player_index, tile, engine=None):
     engine = engine or _engine
     decision = engine.should_chi(game.hands[player_index], game.melds[player_index], tile,
                                  collect_visible_tiles(game),
-                                 default_threat_level(game.melds, player_index, len(game.wall)),
+                                 table_threat(game, player_index, engine),
                                  engine_tai_context(game, player_index))
     return list(decision.details[0]) if decision.action == "chi" else None
 
@@ -789,7 +809,7 @@ def engine_perform_call(game, player_index, discarder_index, tile, call_type,
         return False
 
     visible = collect_visible_tiles(game)
-    threat = default_threat_level(game.melds, player_index, len(game.wall))
+    threat = table_threat(game, player_index, engine)
     ctx = engine_tai_context(game, player_index)
 
     if call_type == "pong":

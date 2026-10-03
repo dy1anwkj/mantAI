@@ -50,6 +50,13 @@ import singapore_rules as sg
 from D_hand_eval import ALL_TILE_TYPES, evaluate_discard_quality, winning_tiles
 
 
+@pytest.fixture(autouse=True)
+def _few_win_chance_playouts(monkeypatch):
+    # Every human discard plays the game out to rate the discards; a couple of
+    # playouts covers that path without each full-game test taking half a minute.
+    monkeypatch.setattr(sim, "WIN_CHANCE_PLAYOUTS", 2)
+
+
 def B(*ranks):
     return [('bamboo', r) for r in ranks]
 
@@ -278,19 +285,33 @@ def test_can_hu_with_kong_meld():
     assert game.can_hu(0)
 
 
-def test_win_chance_is_a_valid_percentage_for_every_tile():
+def test_hidden_tile_guess_uses_only_what_player_one_can_see():
     game = _quiet_game()
-    for tile in set(game.hands[0]):
-        chance = sim.estimate_discard_win_chance(game, 0, tile)
-        assert 0.0 <= chance <= 99.0
+    snap = sim._table_snapshot(game, 0)
+    assert "hands" not in snap and snap["hand"] == game.hands[0]
+    hands, wall = sim.sample_hidden_tiles(snap, random.Random(3))
+    assert hands[0] == game.hands[0]
+    assert [len(h) for h in hands] == [len(h) for h in game.hands]
+    assert len(wall) == len(game.wall)
+    assert not any(sg.is_bonus(t) for h in hands[1:] for t in h)
+    everything = sum(hands, []) + wall + sum(game.bonus, [])
+    assert Counter(everything) == Counter(sim.all_tiles)
 
 
-def test_win_chance_prefers_keeping_a_ready_hand():
-    game = _quiet_game()
+def test_playout_win_chance_prefers_keeping_a_ready_hand():
+    # A fixed deal, so the result is the same every run: on random deals,
+    # 40 playouts misjudged about one table in ten.
+    game = sim.MahjongGame(dealer=0, wind_round=0, rand=random.Random(0))
+    with contextlib.redirect_stdout(io.StringIO()):
+        game.deal()
     game.hands[0] = B(1, 2, 3) + D(4, 5, 6) + W(7, 8, 9) + W(2, 2, 2) + D(9) + [('wind', 'north')]
-    breaks_hand = sim.estimate_discard_win_chance(game, 0, ('bamboo', 2))
-    keeps_ready = sim.estimate_discard_win_chance(game, 0, ('wind', 'north'))
-    assert keeps_ready > breaks_hand
+    chances = sim.playout_win_chances(game, 0, [('bamboo', 2), ('wind', 'north')],
+                                      playouts=80, seed=1, parallel=False)
+    assert all(0.0 <= c <= 100.0 for c in chances.values())
+    assert chances[('wind', 'north')] > chances[('bamboo', 2)]
+    again = sim.playout_win_chances(game, 0, [('bamboo', 2), ('wind', 'north')],
+                                    playouts=80, seed=1, parallel=False)
+    assert again == chances                     # same seed, same playouts
 
 
 # --------------------------------------------------------------------------
@@ -299,8 +320,8 @@ def test_win_chance_prefers_keeping_a_ready_hand():
 class CheckedGame(sim.MahjongGame):
     games = []
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         CheckedGame.games.append(self)
 
     def discard_tile(self, tile):
@@ -928,3 +949,23 @@ def test_resumed_game_dealer_still_draws():
     game.current_player = 0
     game.turns = 10
     sim.play_game(game=game, delay=0, check=True)
+
+
+def test_engine_with_opponent_model_uses_its_danger_and_threat():
+    from Decision_Strategy_engine import table_threat
+    from R_opponent_analysis import OpponentAnalyzer
+    game = _quiet_game()
+    game.verbose = False
+    model = OpponentAnalyzer(4, 0)
+    engine = StrategyEngine(opponent_model=model)
+    assert engine.danger_fn == model.danger_estimate
+    game.melds[2] = [D(9, 9, 9)[:3], B(1, 2, 3)]
+    threat = table_threat(game, 0, engine)
+    assert model.melds[2] == game.melds[2]          # refreshed from the table
+    assert threat == model.threat_level() > 0
+    assert sim.engine_choose_discard(game, 0, engine) in game.hands[0]
+
+
+def test_player_one_engine_defends_harder_than_the_default():
+    game = sim.MahjongGame()
+    assert game.strategy.w["danger"] == sim.PLAYER1_WEIGHTS["danger"] > 150

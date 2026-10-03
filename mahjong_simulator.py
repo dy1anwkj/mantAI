@@ -9,6 +9,7 @@ from Decision_Strategy_engine import (
     collect_visible_tiles,
     engine_choose_discard,
     engine_chi_sequence,
+    engine_discard_decision,
     engine_should_call,
     summarize_player_state,
 )
@@ -46,6 +47,13 @@ OPPONENT_STYLES = {
     "cautious": {"danger": 300.0, "honor_pong_bonus": 8.0},
 }
 
+# Player 1's engine (also used for the human's hints). Against the opponents
+# above, defending harder paid off: danger 150 -> 700 took Player 1 from
+# about +0.2 to +0.56 units a game over 8000 games, with fewer deal-ins.
+# Plugging in R_opponent_analysis (StrategyEngine(opponent_model=...)) did
+# not beat the built-in danger estimate, so it stays off for now.
+PLAYER1_WEIGHTS = {"danger": 700.0}
+
 class MahjongGame:
     def __init__(self, dealer=None, wind_round=None, rand=None):
         # Random source for the wall, seats and random Chi runs; defaults to
@@ -64,7 +72,7 @@ class MahjongGame:
         # Each AI player gets its own random eagerness to call Pong / Kong / Chi
         # (used when opponents == "random").
         self.call_rates = [self.rand.uniform(0.2, 0.8) for _ in range(4)]
-        self.strategy = StrategyEngine()
+        self.strategy = StrategyEngine(PLAYER1_WEIGHTS)
         # Players 2-4: "engine" (each with a random style) or "random".
         self.opponents = "engine"
         self.styles = {p: self.rand.choice(sorted(OPPONENT_STYLES)) for p in (1, 2, 3)}
@@ -460,40 +468,142 @@ class MahjongGame:
         score = self.score_win(player_index, discard)
         return score is not None and score["tai"] >= sg.MIN_TAI
 
-def estimate_discard_win_chance(game, player_index, tile, visible_tiles=None):
-    hand = game.hands[player_index]
-    melds = game.melds[player_index]
-    if visible_tiles is None:
-        visible_tiles = collect_visible_tiles(game)
+# --------------------------------------------------------------------------
+# Win chance by playouts: guess the hidden tiles, play the rest of the game
+# out many times, and count how often the player wins.
+# --------------------------------------------------------------------------
+WIN_CHANCE_PLAYOUTS = 150   # per candidate discard; ~1-2 s for three candidates
+WIN_CHANCE_CANDIDATES = 3   # the engine's best few discards are compared
 
-    quality = evaluate_discard_quality(hand, tile, exposed_melds=melds, visible_tiles=visible_tiles)
-    remaining = list(hand)
-    remaining.remove(tile)
 
-    raw_score = (
-        quality["after_score"]
-        + 140 * len(quality["waits_after"])
-        + 25 * len(useful_tiles(remaining, melds, visible_tiles))
-        - 10 * len(quality["waits_before"])
-    )
-    percentage = max(0.0, min(99.0, 52.0 + raw_score / 55.0))
-    return round(percentage, 1)
+def _table_snapshot(game, player_index):
+    """What `player_index` can know: their own hand, the public table and the
+    seat setup. Opponents' hands are reduced to their sizes. Plain data, so
+    it can be sent to a worker process."""
+    return {
+        "player": player_index, "hand": list(game.hands[player_index]),
+        "hand_sizes": [len(h) for h in game.hands],
+        "discards": [list(pile) for pile in game.discards],
+        "melds": [[list(m) for m in melds] for melds in game.melds],
+        "bonus": [list(b) for b in game.bonus], "instant": dict(game.instant),
+        "dealer": game.dealer, "wind_round": game.wind_round,
+        "current_player": game.current_player, "turns": game.turns,
+        "styles": dict(game.styles), "opponents": game.opponents,
+    }
+
+
+def sample_hidden_tiles(snap, rand):
+    """A possible deal of everything the snapshot's player cannot see: the
+    other players' concealed hands and the wall. Unrevealed bonus tiles are
+    always in the wall, because a player who draws one reveals it at once."""
+    seen = Counter(snap["hand"])
+    for p in range(4):
+        seen.update(snap["discards"][p])
+        seen.update(snap["bonus"][p])
+        for meld in snap["melds"][p]:
+            seen.update(meld)
+    unseen = Counter(all_tiles)
+    unseen.subtract(seen)
+    pool = [t for t, n in unseen.items() if not sg.is_bonus(t) for _ in range(n)]
+    bonus = [t for t, n in unseen.items() if sg.is_bonus(t) for _ in range(n)]
+    rand.shuffle(pool)
+    hands = []
+    for p, size in enumerate(snap["hand_sizes"]):
+        if p == snap["player"]:
+            hands.append(list(snap["hand"]))
+        else:
+            hands.append(pool[:size])
+            pool = pool[size:]
+    wall = pool + bonus
+    rand.shuffle(wall)
+    return hands, wall
+
+
+def _playout_game(snap, rand):
+    """The table rebuilt with the hidden tiles re-guessed, where every seat
+    (the player included) is played by the engine. Opponents keep their styles."""
+    g = MahjongGame(snap["dealer"], snap["wind_round"], rand=rand)
+    g.hands, g.wall = sample_hidden_tiles(snap, rand)
+    g.discards = [list(pile) for pile in snap["discards"]]
+    g.melds = [[list(m) for m in melds] for melds in snap["melds"]]
+    g.bonus = [list(b) for b in snap["bonus"]]
+    g.instant = Counter(snap["instant"])
+    g.current_player, g.turns = snap["current_player"], snap["turns"]
+    g.styles, g.opponents = dict(snap["styles"]), snap["opponents"]
+    g.opponent_engines = {p: StrategyEngine(OPPONENT_STYLES[s]) for p, s in g.styles.items()}
+    g.player1, g.verbose = "engine", False
+    return g
+
+
+def _playout_wins(snap, tile, seeds):
+    """How many of these playouts the player wins after discarding `tile`."""
+    wins = 0
+    for s in seeds:
+        g = _playout_game(snap, random.Random(s))
+        session = GameSession(game=g, start=False)
+        session._first_turn = False
+        session._offer_turn(snap["player"], claimed=True)   # discard only
+        session.apply(Action("discard", tile))
+        while not session.is_over:
+            session.apply(choose_action(g, session.decision))
+        wins += bool(g.result and g.result["winner"] == snap["player"])
+    return wins
+
+
+_pool = None
+
+
+def _playout_pool():
+    """Worker processes for playouts, started once and reused every turn."""
+    global _pool
+    if _pool is None:
+        import os
+        from concurrent.futures import ProcessPoolExecutor
+        _pool = ProcessPoolExecutor(max_workers=os.cpu_count() or 1)
+    return _pool
+
+
+def playout_win_chances(game, player_index, tiles, playouts=None, seed=None, parallel=True):
+    """{tile: % of playouts the player wins after discarding tile}. Every
+    candidate is played on the same guessed deals, so the differences between
+    them come from the discard, not from luck of the deal."""
+    playouts = WIN_CHANCE_PLAYOUTS if playouts is None else playouts
+    if not playouts:
+        return {tile: 0.0 for tile in tiles}
+    master = random.Random(seed)
+    seeds = [master.random() for _ in range(playouts)]
+    snap = _table_snapshot(game, player_index)
+    wins = Counter()
+    if parallel:
+        try:
+            pool = _playout_pool()
+            chunks = [seeds[i::10] for i in range(min(10, playouts))]
+            futures = {pool.submit(_playout_wins, snap, tile, chunk): tile
+                       for tile in tiles for chunk in chunks}
+            for future, tile in futures.items():
+                wins[tile] += future.result()
+        except Exception:
+            wins.clear()          # no worker processes here: play them out in this one
+            parallel = False
+    if not parallel:
+        for tile in tiles:
+            wins[tile] = _playout_wins(snap, tile, seeds)
+    return {tile: round(100.0 * wins[tile] / playouts, 1) for tile in tiles}
 
 
 def choose_discard_tile(game, state=None):
-    hand = game.sort_tiles(game.hands[game.current_player])
+    player = game.current_player
+    hand = game.sort_tiles(game.hands[player])
     if state is None:
-        state = summarize_player_state(game, game.current_player, game.strategy)
+        state = summarize_player_state(game, player, game.strategy)
     analysis = state["analysis"]
-    strategy_choice = state["best_discard"]
 
-    # Duplicate tiles give the same result, so each distinct tile is rated once.
-    chances = {
-        tile: estimate_discard_win_chance(game, game.current_player, tile, state["visible_tiles"])
-        for tile in dict.fromkeys(hand)
-    }
-    best_tile, best_percentage = max(chances.items(), key=lambda item: item[1])
-    recommended = strategy_choice if strategy_choice in chances else best_tile
+    # The engine shortlists its best few discards; each is played out to the
+    # end of the game many times, and the one that wins most often is
+    # recommended (on a tie, the engine's order decides).
+    ranked = [r["tile"] for r in engine_discard_decision(game, player, game.strategy).details]
+    chances = playout_win_chances(game, player, ranked[:WIN_CHANCE_CANDIDATES])
+    recommended = max(chances, key=chances.get)
 
     print("\nYour sorted hand:")
     for i, tile in enumerate(hand, start=1):
@@ -505,8 +615,9 @@ def choose_discard_tile(game, state=None):
             print("  -", [game.format_tile(t) for t in game.sort_tiles(meld)])
 
     print(f"\nEvaluator summary: score={analysis['strength']['score']:.1f}, waits={len(analysis['waits'])}, useful={[item['tile'] for item in analysis['useful_tiles'][:3]]}")
-    print(f"Strategy recommendation: {game.format_tile(recommended)}")
-    print(f"Best discard by win estimate: {game.format_tile(best_tile)} ({best_percentage:.1f}% estimated win chance)")
+    print(f"Recommended discard: {game.format_tile(recommended)} ({chances[recommended]:.0f}% win chance)")
+    print(f"Win chance by discard ({WIN_CHANCE_PLAYOUTS} playouts each): " + ", ".join(
+        f"{game.format_tile(t)} {pct:.0f}%" for t, pct in sorted(chances.items(), key=lambda kv: -kv[1])))
 
     while True:
         try:
