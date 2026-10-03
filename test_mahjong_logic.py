@@ -51,10 +51,10 @@ from D_hand_eval import ALL_TILE_TYPES, evaluate_discard_quality, winning_tiles
 
 
 @pytest.fixture(autouse=True)
-def _few_win_chance_playouts(monkeypatch):
+def _few_discard_playouts(monkeypatch):
     # Every human discard plays the game out to rate the discards; a couple of
-    # playouts covers that path without each full-game test taking half a minute.
-    monkeypatch.setattr(sim, "WIN_CHANCE_PLAYOUTS", 2)
+    # playouts covers that path without each full-game test taking minutes.
+    monkeypatch.setattr(sim, "DISCARD_PLAYOUTS", 2)
 
 
 def B(*ranks):
@@ -298,20 +298,51 @@ def test_hidden_tile_guess_uses_only_what_player_one_can_see():
     assert Counter(everything) == Counter(sim.all_tiles)
 
 
-def test_playout_win_chance_prefers_keeping_a_ready_hand():
-    # A fixed deal, so the result is the same every run: on random deals,
-    # 40 playouts misjudged about one table in ten.
+def test_hidden_tile_guess_reads_opponent_discards():
+    game = _quiet_game()
+    red = ('dragon', 'red')
+    for p in range(4):              # nobody holds a Red Dragon yet
+        others = [t for t in game.wall if t != red and not sg.is_bonus(t)]
+        for i, t in enumerate(game.hands[p]):
+            if t == red:
+                game.wall.remove(others[0])
+                game.hands[p][i] = others.pop(0)
+                game.wall.append(red)
+    game.discards[1].append(red)    # Player 2 threw one away
+    game.wall.remove(red)
+    snap = sim._table_snapshot(game, 0)
+    held = Counter()
+    rand = random.Random(5)
+    for _ in range(300):
+        hands, _ = sim.sample_hidden_tiles(snap, rand)
+        held.update(p for p in (1, 2, 3) if red in hands[p])
+    # A player who discarded an honour rarely still holds one.
+    assert held[1] * 4 < min(held[2], held[3])
+
+
+def test_playouts_prefer_keeping_a_ready_hand():
+    # A fixed deal, so the result is the same every run.
     game = sim.MahjongGame(dealer=0, wind_round=0, rand=random.Random(0))
     with contextlib.redirect_stdout(io.StringIO()):
         game.deal()
     game.hands[0] = B(1, 2, 3) + D(4, 5, 6) + W(7, 8, 9) + W(2, 2, 2) + D(9) + [('wind', 'north')]
-    chances = sim.playout_win_chances(game, 0, [('bamboo', 2), ('wind', 'north')],
-                                      playouts=80, seed=1, parallel=False)
-    assert all(0.0 <= c <= 100.0 for c in chances.values())
-    assert chances[('wind', 'north')] > chances[('bamboo', 2)]
-    again = sim.playout_win_chances(game, 0, [('bamboo', 2), ('wind', 'north')],
-                                    playouts=80, seed=1, parallel=False)
-    assert again == chances                     # same seed, same playouts
+    tiles = [('bamboo', 2), ('wind', 'north')]
+    ratings = sim.rate_discards(game, 0, tiles, playouts=80, seed=1, parallel=False)
+    keep, breaks = ratings[('wind', 'north')], ratings[('bamboo', 2)]
+    assert keep["playouts"] == breaks["playouts"] == 80
+    assert all(0.0 <= r["win"] <= 100.0 for r in ratings.values())
+    assert keep["units"] > breaks["units"] and keep["win"] > breaks["win"]
+    assert sim.rate_discards(game, 0, tiles, playouts=80, seed=1, parallel=False) == ratings
+
+
+def test_discard_rating_halves_the_field_each_round():
+    game = _quiet_game()
+    tiles = list(dict.fromkeys(game.hands[0]))
+    ratings = sim.rate_discards(game, 0, tiles, playouts=16, seed=2, parallel=False)
+    counts = sorted((r["playouts"] for r in ratings.values()), reverse=True)
+    assert ratings[tiles[0]]["playouts"] == 16      # the baseline always plays on
+    assert sum(c == 16 for c in counts) in (2, 3)   # two finalists, plus the baseline
+    assert counts[-1] == 2                          # the first round is an eighth
 
 
 # --------------------------------------------------------------------------

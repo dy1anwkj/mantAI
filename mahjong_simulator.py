@@ -6,20 +6,12 @@ from dataclasses import dataclass
 import singapore_rules as sg
 from Decision_Strategy_engine import (
     StrategyEngine,
-    collect_visible_tiles,
     engine_choose_discard,
     engine_chi_sequence,
     engine_discard_decision,
     engine_should_call,
-    summarize_player_state,
 )
-from D_hand_eval import (
-    analyze_hand,
-    evaluate_discard_quality,
-    is_winning_hand,
-    useful_tiles,
-    winning_tiles,
-)
+from D_hand_eval import NUMBER_SUITS, is_winning_hand, winning_tiles
 from H_game_state import observe
 
 # Define Mahjong tiles (Bamboo, Dots, Wan, Winds, Dragons)
@@ -469,11 +461,46 @@ class MahjongGame:
         return score is not None and score["tai"] >= sg.MIN_TAI
 
 # --------------------------------------------------------------------------
-# Win chance by playouts: guess the hidden tiles, play the rest of the game
-# out many times, and count how often the player wins.
+# Rating discards by playouts: guess the hidden tiles from what is on the
+# table, play the rest of the game out many times, and average what the
+# player wins or loses.
 # --------------------------------------------------------------------------
-WIN_CHANCE_PLAYOUTS = 150   # per candidate discard; ~1-2 s for three candidates
-WIN_CHANCE_CANDIDATES = 3   # the engine's best few discards are compared
+DISCARD_PLAYOUTS = 240   # playouts behind each of the two finalists
+
+# How much likelier an unseen tile is to be in an opponent's hand than a blind
+# guess says, by what that opponent has shown (see hand_read_key). Measured
+# with measure_hand_reads(range(1500)); on 500 other games these weights guess
+# the opponents' hands better than a blind guess (log-loss 0.351 vs 0.357).
+HAND_READS = {
+    ('honour', 0, False): 0.68, ('honour', 0, True): 0.38,
+    ('honour', 1, False): 0.05, ('honour', 1, True): 0.04,
+    ('honour', 2, False): 0.03, ('honour', 2, True): 0.03,
+    ('suit', 0, False, False, False): 1.15, ('suit', 0, False, False, True): 1.14,
+    ('suit', 0, False, True, False): 1.20, ('suit', 0, False, True, True): 1.11,
+    ('suit', 0, True, False, False): 0.95, ('suit', 0, True, False, True): 0.89,
+    ('suit', 0, True, True, False): 0.91, ('suit', 0, True, True, True): 0.81,
+    ('suit', 1, False, False, False): 0.72, ('suit', 1, False, False, True): 0.61,
+    ('suit', 1, False, True, False): 0.89, ('suit', 1, False, True, True): 0.75,
+    ('suit', 1, True, False, False): 0.51, ('suit', 1, True, False, True): 0.41,
+    ('suit', 1, True, True, False): 0.57, ('suit', 1, True, True, True): 0.45,
+    ('suit', 2, False, False, False): 0.43, ('suit', 2, False, False, True): 0.32,
+    ('suit', 2, False, True, False): 0.61, ('suit', 2, False, True, True): 0.37,
+    ('suit', 2, True, False, False): 0.38, ('suit', 2, True, False, True): 0.16,
+    ('suit', 2, True, True, False): 0.36, ('suit', 2, True, True, True): 0.18,
+}
+
+
+def hand_read_key(tile, discards, melds):
+    """What one opponent's discards and melds say about `tile`: how many
+    copies they threw away (0, 1, 2+); for a suited tile, whether they threw
+    away a tile one or two ranks from it and whether they have a meld in its
+    suit; for an honour, whether they have an honour meld."""
+    same = min(2, discards.count(tile))
+    if tile[0] in NUMBER_SUITS:
+        suit, rank = tile
+        gaps = {abs(t[1] - rank) for t in discards if t[0] == suit}
+        return ("suit", same, 1 in gaps, 2 in gaps, any(m[0][0] == suit for m in melds))
+    return ("honour", same, any(m[0][0] not in NUMBER_SUITS for m in melds))
 
 
 def _table_snapshot(game, player_index):
@@ -492,28 +519,40 @@ def _table_snapshot(game, player_index):
     }
 
 
-def sample_hidden_tiles(snap, rand):
-    """A possible deal of everything the snapshot's player cannot see: the
-    other players' concealed hands and the wall. Unrevealed bonus tiles are
-    always in the wall, because a player who draws one reveals it at once."""
+def _unseen_tiles(snap):
+    """Counter of the tiles the snapshot's player cannot see."""
     seen = Counter(snap["hand"])
     for p in range(4):
         seen.update(snap["discards"][p])
         seen.update(snap["bonus"][p])
         for meld in snap["melds"][p]:
             seen.update(meld)
-    unseen = Counter(all_tiles)
-    unseen.subtract(seen)
+    return Counter(all_tiles) - seen
+
+
+def sample_hidden_tiles(snap, rand):
+    """A possible deal of everything the snapshot's player cannot see: the
+    other players' concealed hands and the wall. Each opponent's hand is
+    drawn with the HAND_READS weights for what they have discarded and
+    melded. Unrevealed bonus tiles are always in the wall, because a player
+    who draws one reveals it at once."""
+    unseen = _unseen_tiles(snap)
     pool = [t for t, n in unseen.items() if not sg.is_bonus(t) for _ in range(n)]
     bonus = [t for t, n in unseen.items() if sg.is_bonus(t) for _ in range(n)]
-    rand.shuffle(pool)
-    hands = []
-    for p, size in enumerate(snap["hand_sizes"]):
-        if p == snap["player"]:
-            hands.append(list(snap["hand"]))
-        else:
-            hands.append(pool[:size])
-            pool = pool[size:]
+    hands = [None] * 4
+    hands[snap["player"]] = list(snap["hand"])
+    others = [p for p in range(4) if p != snap["player"]]
+    rand.shuffle(others)
+    for p in others:
+        weight = {t: HAND_READS.get(hand_read_key(t, snap["discards"][p], snap["melds"][p]), 1.0)
+                  for t in set(pool)}
+        # Weighted draw without replacement: keep the tiles with the largest
+        # random ** (1 / weight).
+        keys = [rand.random() ** (1.0 / weight[t]) for t in pool]
+        best = sorted(range(len(pool)), key=keys.__getitem__, reverse=True)
+        taken = set(best[:snap["hand_sizes"][p]])
+        hands[p] = [t for i, t in enumerate(pool) if i in taken]
+        pool = [t for i, t in enumerate(pool) if i not in taken]
     wall = pool + bonus
     rand.shuffle(wall)
     return hands, wall
@@ -535,19 +574,23 @@ def _playout_game(snap, rand):
     return g
 
 
-def _playout_wins(snap, tile, seeds):
-    """How many of these playouts the player wins after discarding `tile`."""
-    wins = 0
+def _playout_games(snap, tile, seeds):
+    """[(won, units won)] for each playout of discarding `tile`. Units are the
+    hand payout plus instant payments made from now on."""
+    player = snap["player"]
+    before = snap["instant"].get(player, 0)
+    games = []
     for s in seeds:
         g = _playout_game(snap, random.Random(s))
         session = GameSession(game=g, start=False)
         session._first_turn = False
-        session._offer_turn(snap["player"], claimed=True)   # discard only
+        session._offer_turn(player, claimed=True)   # discard only
         session.apply(Action("discard", tile))
         while not session.is_over:
             session.apply(choose_action(g, session.decision))
-        wins += bool(g.result and g.result["winner"] == snap["player"])
-    return wins
+        result = session.result()
+        games.append((result["winner"] == player, result["total"][player] - before))
+    return games
 
 
 _pool = None
@@ -563,47 +606,115 @@ def _playout_pool():
     return _pool
 
 
-def playout_win_chances(game, player_index, tiles, playouts=None, seed=None, parallel=True):
-    """{tile: % of playouts the player wins after discarding tile}. Every
-    candidate is played on the same guessed deals, so the differences between
-    them come from the discard, not from luck of the deal."""
-    playouts = WIN_CHANCE_PLAYOUTS if playouts is None else playouts
-    if not playouts:
-        return {tile: 0.0 for tile in tiles}
-    master = random.Random(seed)
-    seeds = [master.random() for _ in range(playouts)]
-    snap = _table_snapshot(game, player_index)
-    wins = Counter()
+def _run_playouts(snap, jobs, parallel=True):
+    """The playouts of each (tile, seeds) job. Every job's games come back in
+    the same seed order, so the same deal lines up across tiles."""
     if parallel:
         try:
             pool = _playout_pool()
-            chunks = [seeds[i::10] for i in range(min(10, playouts))]
-            futures = {pool.submit(_playout_wins, snap, tile, chunk): tile
-                       for tile in tiles for chunk in chunks}
-            for future, tile in futures.items():
-                wins[tile] += future.result()
+            futures = [[pool.submit(_playout_games, snap, tile, seeds[i::10])
+                        for i in range(min(10, len(seeds)))] for tile, seeds in jobs]
+            return [[g for f in fs for g in f.result()] for fs in futures]
         except Exception:
-            wins.clear()          # no worker processes here: play them out in this one
-            parallel = False
-    if not parallel:
-        for tile in tiles:
-            wins[tile] = _playout_wins(snap, tile, seeds)
-    return {tile: round(100.0 * wins[tile] / playouts, 1) for tile in tiles}
+            pass          # no worker processes here: play them out in this one
+    return [[g for i in range(min(10, len(seeds))) for g in _playout_games(snap, tile, seeds[i::10])]
+            for tile, seeds in jobs]
 
 
-def choose_discard_tile(game, state=None):
+def rate_discards(game, player_index, tiles, playouts=None, seed=None, parallel=True):
+    """{tile: {"units": average units won (or lost) per game, "win": % of
+    games won, "playouts": how many were played, "games": units won in each
+    playout}} for discarding each tile.
+
+    Every tile is first played out an eighth of `playouts` times; then round
+    by round the better half by units (ties to the earlier tile) is played
+    twice as many times, until the last two have `playouts` each. The first
+    tile is the baseline and is always played to the end. Every tile is
+    played on the same guessed deals, so the differences between them come
+    from the discard, not from luck of the deal."""
+    playouts = DISCARD_PLAYOUTS if playouts is None else playouts
+    master = random.Random(seed)
+    seeds = [master.random() for _ in range(playouts)]
+    snap = _table_snapshot(game, player_index)
+    tiles = list(dict.fromkeys(tiles))
+    games = {tile: [] for tile in tiles}
+    live, field = tiles, len(tiles)
+    done, budget = 0, min(playouts, max(1, playouts // 8))
+    while live and budget > done:
+        jobs = [(tile, seeds[done:budget]) for tile in live]
+        for tile, played in zip(live, _run_playouts(snap, jobs, parallel)):
+            games[tile] += played
+        done = budget
+        field = max(2, (field + 1) // 2)
+        ahead = sorted(live, key=lambda t: sum(u for _, u in games[t]), reverse=True)[:field]
+        live = [t for t in live if t in ahead or t == tiles[0]]
+        budget = min(playouts, 2 * budget)
+    ratings = {}
+    for tile, played in games.items():
+        n = len(played)
+        ratings[tile] = {"units": sum(u for _, u in played) / n if n else 0.0,
+                         "win": 100.0 * sum(w for w, _ in played) / n if n else 0.0,
+                         "playouts": n, "games": [u for _, u in played]}
+    return ratings
+
+
+def recommend_discard(game, player_index, playouts=None, seed=None, parallel=True):
+    """(tile, its rating) to discard. The engine's choice stands unless a tile
+    that survived to the final round won more units over the same deals by
+    more than two standard errors, so luck of the playouts alone rarely
+    overturns it."""
+    ranked = [r["tile"] for r in engine_discard_decision(game, player_index, game.strategy).details]
+    ratings = rate_discards(game, player_index, ranked, playouts, seed, parallel)
+    baseline = ranked[0]
+    n = ratings[baseline]["playouts"]
+    finalists = [t for t in ranked if ratings[t]["playouts"] == n and t != baseline]
+    if n > 1 and finalists:
+        challenger = max(finalists, key=lambda t: ratings[t]["units"])
+        diffs = [a - b for a, b in zip(ratings[challenger]["games"], ratings[baseline]["games"])]
+        mean = sum(diffs) / n
+        spread = (sum((d - mean) ** 2 for d in diffs) / (n - 1)) ** 0.5
+        if mean > 2 * spread / n ** 0.5:
+            return challenger, ratings[challenger]
+    return baseline, ratings[baseline]
+
+
+def measure_hand_reads(seeds):
+    """HAND_READS measured from engine-only games, one per seed: for each
+    hand_read_key, the copies opponents really held over the copies a blind
+    guess gives them. Looked at on about a third of the turns, from the view
+    of the player to move."""
+    held, blind = Counter(), Counter()
+    for seed in seeds:
+        rand = random.Random(seed)
+        g = MahjongGame(rand=rand)
+        g.player1, g.verbose = "engine", False
+        g.deal()
+        session = GameSession(game=g)
+        while not session.is_over:
+            d = session.decision
+            if d.kind == "turn" and rand.random() < 0.3:
+                unseen = {t: n for t, n in _unseen_tiles(_table_snapshot(g, d.player)).items()
+                          if not sg.is_bonus(t)}
+                total = sum(unseen.values())
+                for p in range(4):
+                    if p == d.player:
+                        continue
+                    in_hand = Counter(g.hands[p])
+                    for t, n in unseen.items():
+                        key = hand_read_key(t, g.discards[p], g.melds[p])
+                        held[key] += in_hand[t]
+                        blind[key] += n * len(g.hands[p]) / total
+            session.apply(choose_action(g, d))
+    return {key: round(held[key] / blind[key], 2) for key in blind}
+
+
+def choose_discard_tile(game):
     player = game.current_player
     hand = game.sort_tiles(game.hands[player])
-    if state is None:
-        state = summarize_player_state(game, player, game.strategy)
-    analysis = state["analysis"]
 
-    # The engine shortlists its best few discards; each is played out to the
-    # end of the game many times, and the one that wins most often is
-    # recommended (on a tie, the engine's order decides).
-    ranked = [r["tile"] for r in engine_discard_decision(game, player, game.strategy).details]
-    chances = playout_win_chances(game, player, ranked[:WIN_CHANCE_CANDIDATES])
-    recommended = max(chances, key=chances.get)
+    # Every distinct tile is played out to the end of the game, the hidden
+    # tiles guessed from the discards and melds on the table.
+    recommended, best = recommend_discard(game, player)
 
     print("\nYour sorted hand:")
     for i, tile in enumerate(hand, start=1):
@@ -614,10 +725,8 @@ def choose_discard_tile(game, state=None):
         for meld in game.melds[game.current_player]:
             print("  -", [game.format_tile(t) for t in game.sort_tiles(meld)])
 
-    print(f"\nEvaluator summary: score={analysis['strength']['score']:.1f}, waits={len(analysis['waits'])}, useful={[item['tile'] for item in analysis['useful_tiles'][:3]]}")
-    print(f"Recommended discard: {game.format_tile(recommended)} ({chances[recommended]:.0f}% win chance)")
-    print(f"Win chance by discard ({WIN_CHANCE_PLAYOUTS} playouts each): " + ", ".join(
-        f"{game.format_tile(t)} {pct:.0f}%" for t, pct in sorted(chances.items(), key=lambda kv: -kv[1])))
+    print(f"\nRecommended discard: {game.format_tile(recommended)} "
+          f"({best['units']:+.1f} units a game on average, {best['win']:.0f}% win chance)")
 
     while True:
         try:
