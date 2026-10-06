@@ -6,6 +6,10 @@ mantAI machine learning command line. Run from the project folder:
     python -m mantai_ml train    --data data/sim.jsonl --out models/policy.pt
     python -m mantai_ml evaluate --model models/policy.pt --games 500
 
+  Self-play (the model teaches itself under the rules; no copying)
+    python -m mantai_ml selfplay --iterations 150 --games 400 --out models/selfplay.pt
+    python -m mantai_ml evaluate --model models/selfplay.pt --games 1000 --compare
+
   Video
     python -m mantai_ml crops       --video game.mp4 --out crops/ [--config roi.json]
     python -m mantai_ml train-tiles --dataset data/tiles --out models/tiles.pt
@@ -52,6 +56,15 @@ def cmd_evaluate(a):
     sim.print_report(stats, label="Player 1 = ML model")
     if a.compare:
         sim.print_report(sim.simulate(a.games, seed=a.seed, progress=False), label="Player 1 = strategy engine")
+
+
+def cmd_selfplay(a):
+    from .selfplay import selfplay
+    _ensure_dir(a.out)
+    selfplay(a.out, iterations=a.iterations, games_per_iter=a.games, hidden=a.hidden, lr=a.lr,
+             entropy=a.entropy, init=a.init, seed=a.seed, workers=a.workers,
+             eval_every=a.eval_every, shaping=a.shaping, shaping_iters=a.shaping_iters,
+             start_iter=a.start_iter, eval_games=a.eval_games)
 
 
 def cmd_crops(a):
@@ -138,6 +151,25 @@ def main(argv=None):
     s.add_argument("--seed", type=int)
     s.add_argument("--compare", action="store_true", help="also run the strategy engine for comparison")
     s.set_defaults(func=cmd_evaluate)
+
+    s = sub.add_parser("selfplay", help="train the policy by self-play (reinforcement learning)")
+    s.add_argument("--iterations", type=int, default=150)
+    s.add_argument("--games", type=int, default=400, help="games per iteration")
+    s.add_argument("--out", default="models/selfplay.pt")
+    s.add_argument("--hidden", type=int, default=256)
+    s.add_argument("--lr", type=float, default=3e-4)
+    s.add_argument("--entropy", type=float, default=0.01, help="bonus for keeping options open")
+    s.add_argument("--init", help="start from a saved policy instead of random weights")
+    s.add_argument("--seed", type=int, default=0)
+    s.add_argument("--workers", type=int, help="game-playing processes (default: all cores)")
+    s.add_argument("--eval-every", type=int, default=25)
+    s.add_argument("--eval-games", type=int, default=1000, help="greedy test games at each check")
+    s.add_argument("--shaping", type=float, default=1.0,
+                   help="starting weight of the progress reward (0 = units only)")
+    s.add_argument("--shaping-iters", type=int, default=600,
+                   help="iterations over which the progress reward fades out")
+    s.add_argument("--start-iter", type=int, default=1, help="continue numbering from here (with --init)")
+    s.set_defaults(func=cmd_selfplay)
 
     s = sub.add_parser("crops", help="cut tile images from a video for labelling")
     s.add_argument("--video", required=True)

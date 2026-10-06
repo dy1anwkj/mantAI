@@ -1010,3 +1010,14 @@ def test_dead_wall_is_never_drawn():
     assert not game.wall_exhausted and game.draw_tile() is not None
     assert game.wall_exhausted and game.draw_tile() is None
     assert len(game.wall) == sg.DEAD_WALL
+
+
+def test_first_hu_worksheet_needs_one_tai():
+    # docs/07-08 (Wong practice table): East seat, East wind, self-drawn,
+    # no bonus tiles, all concealed. A Red Dragon pong gives the one tai
+    # needed; a West Wind pong in its place gives none, so no Hu.
+    rest = W(1, 2, 3) + D(4, 5, 6) + B(6, 7, 8) + D(9, 9)
+    red = sg.score_hand(rest + [('dragon', 'red')] * 3, [], [], seat=1, prevailing_wind="east")
+    assert red["tai"] == 1
+    west = sg.score_hand(rest + [('wind', 'west')] * 3, [], [], seat=1, prevailing_wind="east")
+    assert west["tai"] == 0 < sg.MIN_TAI

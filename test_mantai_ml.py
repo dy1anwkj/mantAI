@@ -151,3 +151,45 @@ def test_synthetic_video_leaves_simulator_rng_alone():
     before = sim.rng
     synth.simulated_snapshots(seed=2)
     assert sim.rng is before
+
+
+def test_selfplay_games_are_legal_and_carry_returns():
+    import torch
+    from mantai_ml.model import PolicyNet
+    from mantai_ml.selfplay import SHAPING_DISCOUNT, _numpy_weights, play_games
+    torch.manual_seed(0)
+    weights = _numpy_weights(PolicyNet(hidden=32, dropout=0.0).eval())
+    discards, calls, games = play_games(weights, [1, 2, 3])
+    assert len(games) == 3 and discards
+    for x, mask, a, units, shaped in discards:
+        assert x.shape == (STATE_SIZE,) and mask[a] == 1
+    for g in games:
+        assert 0 <= g["best_progress"] <= g["discards"]
+    # The last discard of a game earns only its own progress gain.
+    assert 0 < SHAPING_DISCOUNT < 1
+
+
+def test_numpy_copy_matches_torch_policy():
+    import numpy as np
+    from mantai_ml.model import PolicyNet
+    from mantai_ml.selfplay import _mlp, _numpy_weights
+    net = PolicyNet(hidden=32, dropout=0.0).eval()
+    x = torch.rand(3, STATE_SIZE)
+    want = net.discard(x).detach().numpy()
+    got = _mlp(x.numpy(), _numpy_weights(net)[0])
+    assert np.allclose(want, got, atol=1e-5)
+
+
+def test_selfplay_saves_a_model_evaluate_can_play(tmp_path):
+    from mantai_ml.ml_player import evaluate_policy
+    from mantai_ml.selfplay import selfplay
+    out = tmp_path / "sp.pt"
+    selfplay(str(out), iterations=2, games_per_iter=8, hidden=32, workers=2,
+             eval_every=2, eval_games=4, log=lambda *_: None)
+    assert out.exists() and (tmp_path / "sp_best.pt").exists() and (tmp_path / "sp_critic.pt").exists()
+    # check=True inside simulate asserts tile conservation, hand sizes and legal wins
+    stats = evaluate_policy(str(out), 10, seed=1, progress=False)
+    assert stats["errors"] == []
+    # Continuing from the saved model picks up its critic too.
+    selfplay(str(out), iterations=1, games_per_iter=4, init=str(out), start_iter=3,
+             workers=1, eval_every=1, eval_games=2, log=lambda *_: None)
