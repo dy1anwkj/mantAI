@@ -6,6 +6,8 @@
   revealed and replaced with a tile from the back of the wall.
 - A player can win on their own draw (self-drawn) or on another player's
   discard. The player whose discard completes the winning hand is the "shooter".
+- The last DEAD_WALL (15) tiles of the wall are never drawn; the hand is a
+  draw once only they are left.
 - Hands are scored in tai. A hand needs at least MIN_TAI to win, and tai is
   capped at MAX_TAI.
 - Payouts double with every tai. A self-drawn win is paid double by all three
@@ -30,6 +32,9 @@ FLOWER_NAMES = {1: 'Plum', 2: 'Orchid', 3: 'Chrysanthemum', 4: 'Bamboo'}
 SEASON_NAMES = {1: 'Spring', 2: 'Summer', 3: 'Autumn', 4: 'Winter'}
 
 MIN_TAI = 1
+# SPGG 2024 rule 9: the last 15 tiles of the wall are never drawn. The hand
+# is a draw once only these are left.
+DEAD_WALL = 15
 MAX_TAI = 5
 # "half": shooter pays double, the other two pay single.
 # "full": shooter alone pays for the whole table (4x).

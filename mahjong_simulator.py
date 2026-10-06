@@ -100,6 +100,11 @@ class MahjongGame:
                 f"Player {i + 1} holds {self.effective_hand_size(i)} tiles, expected {expected}")
 
     @property
+    def wall_exhausted(self):
+        """Only the dead wall is left (see sg.DEAD_WALL)."""
+        return len(self.wall) <= sg.DEAD_WALL
+
+    @property
     def prevailing_wind(self):
         return sg.WINDS[self.wind_round % 4]
 
@@ -143,7 +148,7 @@ class MahjongGame:
                 return True
             for tile in found:
                 self.reveal_bonus(player_index, tile)
-                if not self.wall:
+                if self.wall_exhausted:
                     return False
                 self.hands[player_index].append(self.wall.pop(0))
 
@@ -152,7 +157,7 @@ class MahjongGame:
         Kong replacements come from the back of the wall."""
         player = self.current_player
         while True:
-            if not self.wall:
+            if self.wall_exhausted:
                 self.say("Wall depleted! Round ends in draw.")
                 return None
             tile = self.wall.pop(0) if from_back else self.wall.pop()
@@ -450,7 +455,7 @@ class MahjongGame:
         return sg.situation_tai(
             kong_replacement=self_drawn and self.kong_draw,
             robbed_kong=not self_drawn and self.robbing_kong,
-            last_tile=self_drawn and not self.wall,
+            last_tile=self_drawn and self.wall_exhausted,
             heavenly=self_drawn and first_go and player_index == self.dealer,
             earthly=(not self_drawn and first_go and not self.robbing_kong
                      and self.current_player == self.dealer),

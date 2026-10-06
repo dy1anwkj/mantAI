@@ -306,7 +306,7 @@ def test_automated_game_runs_to_the_end(seed, monkeypatch, capsys):
     assert sum(result["instant"].values()) == 0
     assert sum(result["total"].values()) == 0
     if result["winner"] is None:
-        assert not game.wall and result["payouts"] == {p: 0 for p in range(4)}
+        assert len(game.wall) == sg.DEAD_WALL and result["payouts"] == {p: 0 for p in range(4)}
     else:
         w = result["winner"]
         assert game.check_win(game.hands[w], game.melds[w])

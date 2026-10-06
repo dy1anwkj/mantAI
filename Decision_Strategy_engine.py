@@ -671,7 +671,7 @@ def table_threat(game, player_index, engine=None):
     model, refresh it from the table first so its danger estimates are current."""
     model = getattr(engine or _engine, "opponent_model", None)
     if model is None:
-        return default_threat_level(game.melds, player_index, len(game.wall))
+        return default_threat_level(game.melds, player_index, len(game.wall) - sg.DEAD_WALL)
     model.update_from_game(game, player_index)
     return model.threat_level()
 

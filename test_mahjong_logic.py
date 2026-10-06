@@ -879,8 +879,8 @@ def test_win_on_kong_replacement_and_last_tile():
     game.kong_draw = True
     assert game.score_win(1)["tai"] == sg.SITUATION_TAI
     game.kong_draw = False
-    game.wall = []
-    assert game.can_hu(1)              # last tile of the wall
+    game.wall = game.wall[:sg.DEAD_WALL]
+    assert game.can_hu(1)              # last tile before the dead wall
 
 
 def test_robbing_the_kong_scores_and_skips_kong_payment():
@@ -1000,3 +1000,13 @@ def test_engine_with_opponent_model_uses_its_danger_and_threat():
 def test_player_one_engine_defends_harder_than_the_default():
     game = sim.MahjongGame()
     assert game.strategy.w["danger"] == sim.PLAYER1_WEIGHTS["danger"] > 150
+
+
+def test_dead_wall_is_never_drawn():
+    game = sim.MahjongGame(rand=random.Random(5))
+    game.verbose = False
+    game.deal()
+    game.wall = [t for t in game.wall if not sg.is_bonus(t)][:sg.DEAD_WALL + 1]
+    assert not game.wall_exhausted and game.draw_tile() is not None
+    assert game.wall_exhausted and game.draw_tile() is None
+    assert len(game.wall) == sg.DEAD_WALL
