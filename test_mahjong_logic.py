@@ -1021,3 +1021,32 @@ def test_first_hu_worksheet_needs_one_tai():
     assert red["tai"] == 1
     west = sg.score_hand(rest + [('wind', 'west')] * 3, [], [], seat=1, prevailing_wind="east")
     assert west["tai"] == 0 < sg.MIN_TAI
+
+
+def test_table_danger_reads_fresh_tiles_and_visible_flushes():
+    from Decision_Strategy_engine import DEFAULT_WEIGHTS, table_danger
+    w = dict(DEFAULT_WEIGHTS, fresh_wall=7, flush_melds=3)
+    flush = [B(1, 2, 3), B(5, 5, 5), B(7, 8, 9)]
+    table = {"playable": 6, "seen": {('dot', 5)}, "opponent_melds": [flush, [], []]}
+    assert table_danger(('dot', 5), table, w) == (0.0, 0.0)          # seen before, other suit
+    assert table_danger(('dot', 6), table, w) == (1.0, 0.0)          # fresh, late in the hand
+    assert table_danger(('bamboo', 4), table, w) == (1.0, 1.0)       # fits the bamboo flush
+    assert table_danger(('wind', 'east'), dict(table, playable=30), w) == (0.0, 1.0)  # half flush
+    dragons = {"playable": 40, "seen": set(),
+               "opponent_melds": [[[('dragon', 'red')] * 3, [('dragon', 'green')] * 3]]}
+    assert table_danger(('dragon', 'white'), dragons, w) == (0.0, 1.0)
+    assert table_danger(('dot', 1), None, w) == (0.0, 0.0)
+
+
+def test_table_reading_is_off_by_default():
+    from Decision_Strategy_engine import StrategyEngine
+    hand = B(1, 2, 3, 4) + D(4, 5, 6, 9) + W(2, 3, 4) + [('wind', 'east')] * 2 + [('dragon', 'red')]
+    table = {"playable": 3, "seen": set(), "opponent_melds": [[B(1, 2, 3), B(4, 5, 6), B(7, 8, 9)]]}
+    engine = StrategyEngine()
+    assert ([r["score"] for r in engine.evaluate_discards(hand, table=table)]
+            == [r["score"] for r in engine.evaluate_discards(hand)])
+    cautious = StrategyEngine({"flush_danger": 500.0})
+    scores = {r["tile"]: r["score"] for r in cautious.evaluate_discards(hand, table=table)}
+    plain = {r["tile"]: r["score"] for r in engine.evaluate_discards(hand, table=table)}
+    assert scores[('bamboo', 4)] == plain[('bamboo', 4)] - 500.0
+    assert scores[('dot', 9)] == plain[('dot', 9)]

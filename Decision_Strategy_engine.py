@@ -58,6 +58,13 @@ DEFAULT_WEIGHTS = {
     "lookahead": 0,            # re-rank this many top discards by two-step ukeire (0 = off, slower when on)
     "ukeire2": 0.05,           # weight of the two-step ukeire in that re-ranking
     "call_widen": 0,           # also Pong / Chi at equal shanten when ukeire grows by at least this (0 = off)
+    # Table reading from the study PDFs in docs/ (all off by default; see table_danger)
+    "fresh_danger": 0.0,       # late game: penalty for a tile nobody has shown yet (SPGG pay-for-all)
+    "fresh_wall": 7,           #   ... once this many playable tiles or fewer are left
+    "flush_danger": 0.0,       # penalty for a tile that fits an opponent's visible flush / honour hand
+    "flush_melds": 3,          #   ... once they show this many melds of one kind (SPGG bao)
+    "fold_wall": 0,            # with this many playable tiles or fewer, a hand 2+ from ready
+    "fold": 0.0,               #   ... defends at least this hard (0..1, like a threat level)
 }
 
 
@@ -350,6 +357,43 @@ def default_tile_danger(tile, hand, visible_tiles):
     return round(danger, 3)
 
 
+def table_danger(tile, table, w):
+    """Extra danger from what the table shows (docs/00, 01, 02):
+    - late in the hand, a "fresh" tile nobody has discarded or melded yet can
+      make the thrower pay for everyone (SPGG pay-for-all at 7 / 5 tiles left);
+    - an opponent showing several melds of one suit is likely chasing a
+      flush, so that suit (and honours, for a half flush) is dangerous;
+      two dragon pongs make the last dragon dangerous, three wind pongs the
+      last wind, and several honour pongs any honour.
+    Returns (fresh, fits a visible special hand), each 0 or 1."""
+    if not table:
+        return 0.0, 0.0
+    fresh = 0.0
+    if table["playable"] <= w["fresh_wall"] and tile not in table["seen"]:
+        fresh = 1.0
+    special = 0.0
+    need = int(w["flush_melds"])
+    for melds in table["opponent_melds"]:
+        if not melds:
+            continue
+        kinds = Counter(m[0][0] for m in melds)
+        suits = {k: n for k, n in kinds.items() if k in NUMBER_SUITS}
+        honour_pongs = sum(n for k, n in kinds.items() if k not in NUMBER_SUITS)
+        dragon_pongs = kinds.get("dragon", 0)
+        wind_pongs = kinds.get("wind", 0)
+        if len(suits) == 1 and sum(suits.values()) >= need:
+            suit = next(iter(suits))
+            if tile[0] == suit or tile[0] not in NUMBER_SUITS:
+                special = 1.0
+        if tile[0] == "dragon" and dragon_pongs >= 2:
+            special = 1.0
+        if tile[0] == "wind" and wind_pongs >= 3:
+            special = 1.0
+        if tile[0] not in NUMBER_SUITS and honour_pongs >= need:
+            special = 1.0
+    return fresh, special
+
+
 def default_threat_level(melds_by_player, me, wall_remaining=None):
     """0.0 = nobody close to winning, 1.0 = someone very likely ready."""
     threat = 0.0
@@ -407,10 +451,12 @@ class StrategyEngine:
         return is_winning_hand(list(hand), melds or [])
 
     # ---------------- Discard ----------------
-    def evaluate_discards(self, hand, melds=None, visible_tiles=None, threat=0.0, tai_ctx=None):
+    def evaluate_discards(self, hand, melds=None, visible_tiles=None, threat=0.0, tai_ctx=None,
+                          table=None):
         """Score every possible discard. Hand should have 14 - 3*melds tiles.
         tai_ctx (TaiContext) makes the engine aim for hands that reach the
-        Singapore minimum tai instead of any complete shape."""
+        Singapore minimum tai instead of any complete shape.
+        table (see table_info) adds what the table shows about opponents."""
         melds = melds or []
         visible_tiles = visible_tiles or []
         results = []
@@ -439,6 +485,9 @@ class StrategyEngine:
 
             # defend harder when we are far from ready and opponents look close
             defence = threat * min(1.0, max(0, s) / 3.0)
+            if table and s >= 2 and table["playable"] <= self.w["fold_wall"]:
+                defence = max(defence, self.w["fold"])
+            fresh, special = table_danger(tile, table, self.w)
 
             score = (
                 -self.w["shanten"] * s
@@ -447,6 +496,8 @@ class StrategyEngine:
                 - self.w["danger"] * defence * danger
                 - self.w["draw_probability"] * draw_prob
                 + self.w["tai_potential"] * potential
+                - self.w["fresh_danger"] * fresh
+                - self.w["flush_danger"] * special
             )
             results.append({
                 "tile": tile,
@@ -494,8 +545,8 @@ class StrategyEngine:
             total += copies * best_uk
         return total
 
-    def choose_discard(self, hand, melds=None, visible_tiles=None, threat=0.0, tai_ctx=None):
-        ranked = self.evaluate_discards(hand, melds, visible_tiles, threat, tai_ctx)
+    def choose_discard(self, hand, melds=None, visible_tiles=None, threat=0.0, tai_ctx=None, table=None):
+        ranked = self.evaluate_discards(hand, melds, visible_tiles, threat, tai_ctx, table)
         k = int(self.w.get("lookahead", 0))
         if k and len(ranked) > 1 and ranked[0]["shanten"] >= 1:
             top_s = ranked[0]["shanten"]
@@ -705,13 +756,25 @@ def engine_tai_context(game, player_index):
     )
 
 
+def table_info(game, player_index):
+    """What the table shows for table_danger: playable tiles left before the
+    dead wall, every tile seen in a discard or meld, and each opponent's melds."""
+    visible = collect_visible_tiles(game)
+    return {
+        "playable": len(game.wall) - sg.DEAD_WALL,
+        "seen": set(visible),
+        "opponent_melds": [game.melds[p] for p in range(len(game.melds)) if p != player_index],
+    }
+
+
 def engine_discard_decision(game, player_index, engine=None):
     """The engine's discard Decision; details ranks every distinct discard, best first."""
     engine = engine or _engine
     threat = table_threat(game, player_index, engine)
     return engine.choose_discard(game.hands[player_index], game.melds[player_index],
                                  collect_visible_tiles(game), threat,
-                                 engine_tai_context(game, player_index))
+                                 engine_tai_context(game, player_index),
+                                 table_info(game, player_index))
 
 
 def engine_choose_discard(game, player_index, engine=None, verbose=False):
