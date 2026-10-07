@@ -193,3 +193,22 @@ def test_selfplay_saves_a_model_evaluate_can_play(tmp_path):
     # Continuing from the saved model picks up its critic too.
     selfplay(str(out), iterations=1, games_per_iter=4, init=str(out), start_iter=3,
              workers=1, eval_every=1, eval_games=2, log=lambda *_: None)
+
+
+def test_rules_prior_prefers_discards_closer_to_a_win(tmp_path):
+    from mantai_ml.features import encode_state, legal_mask, rules_prior
+    from mantai_ml.model import PolicyNet, load_model, save_model
+    from mantai_ml.tiles import TILE_INDEX
+    # 1-9 bamboo, 2-3-4 dot, a lone 5 dot and a lone North wind: throwing
+    # North leaves a ready hand, throwing 5 bamboo breaks a run.
+    hand = B(1, 2, 3, 4, 5, 6, 7, 8, 9) + [('dot', 2), ('dot', 3), ('dot', 4),
+                                           ('dot', 5), ('wind', 'north')]
+    assert not rules_prior(encode_state(hand[:-1], [], [], [], 1, "east", 80)).any()  # 13 tiles: nothing to throw
+    x = encode_state(hand, [], [], [], 1, "east", 80)
+    p = rules_prior(x)
+    assert p[TILE_INDEX[('wind', 'north')]] > p[TILE_INDEX[('bamboo', 5)]]
+    net = PolicyNet(hidden=16, dropout=0.0, prior=2.5).eval()
+    logits = net.discard_logits(torch.tensor(x[None]), torch.tensor(legal_mask(hand)[None]))
+    assert logits.argmax().item() == TILE_INDEX[('wind', 'north')]
+    save_model(tmp_path / "p.pt", net)
+    assert load_model(tmp_path / "p.pt")[0].prior == 2.5

@@ -64,6 +64,17 @@ def discard_analysis(hand, melds, visible, ctx):
     return np.concatenate([sh, uk, ready])
 
 
+def rules_prior(x):
+    """For each tile, how close the hand is to a legal win after throwing it,
+    read from the discard analysis in a state vector (numpy or torch, one
+    row or a batch): minus its shanten, plus one per 30 useful tiles left,
+    plus one for a ready hand that reaches the minimum tai. This is the
+    "complete shape first, then at least one tai" lesson of docs/03, 04, 07
+    and 08. Tiles not in the hand score -8 (they are masked out anyway)."""
+    a = STATE_SIZE - 3 * N
+    return -8 * x[..., a:a + N] + 2 * x[..., a + N:a + 2 * N] + x[..., a + 2 * N:a + 3 * N]
+
+
 def _counts(tiles):
     v = np.zeros(N, dtype=np.float32)
     for t, c in Counter(tiles).items():

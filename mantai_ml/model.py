@@ -3,7 +3,7 @@
 import torch
 from torch import nn
 
-from .features import CALL_SIZE, N, STATE_SIZE
+from .features import CALL_SIZE, N, STATE_SIZE, rules_prior
 
 FEATURE_VERSION = 2
 
@@ -19,9 +19,14 @@ def pick_device(prefer=None):
 
 
 class PolicyNet(nn.Module):
-    def __init__(self, hidden=256, dropout=0.1):
+    """prior: weight of features.rules_prior added to the discard scores, so
+    a new network already prefers discards that keep the hand close to a
+    legal win and only learns what to change on top of that (0 = off)."""
+
+    def __init__(self, hidden=256, dropout=0.1, prior=0.0):
         super().__init__()
         self.hidden = hidden
+        self.prior = prior
         self.discard = nn.Sequential(
             nn.Linear(STATE_SIZE, hidden), nn.ReLU(), nn.Dropout(dropout),
             nn.Linear(hidden, hidden), nn.ReLU(), nn.Dropout(dropout),
@@ -34,6 +39,8 @@ class PolicyNet(nn.Module):
 
     def discard_logits(self, state, mask):
         logits = self.discard(state)
+        if self.prior:
+            logits = logits + self.prior * rules_prior(state)
         # Tiles not in the hand can never be discarded.
         return logits.masked_fill(mask == 0, -1e9)
 
@@ -45,6 +52,7 @@ def save_model(path, net, metrics=None):
     torch.save({
         "feature_version": FEATURE_VERSION,
         "hidden": net.hidden,
+        "prior": getattr(net, "prior", 0.0),
         "state_dict": net.state_dict(),
         "metrics": metrics or {},
     }, path)
@@ -54,7 +62,7 @@ def load_model(path, device="cpu"):
     ckpt = torch.load(path, map_location=device, weights_only=False)
     if ckpt.get("feature_version") != FEATURE_VERSION:
         raise ValueError(f"{path} was trained with different features; retrain it.")
-    net = PolicyNet(hidden=ckpt["hidden"])
+    net = PolicyNet(hidden=ckpt["hidden"], prior=ckpt.get("prior", 0.0))
     net.load_state_dict(ckpt["state_dict"])
     net.to(device).eval()
     return net, ckpt.get("metrics", {})

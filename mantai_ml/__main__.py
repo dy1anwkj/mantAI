@@ -64,7 +64,7 @@ def cmd_selfplay(a):
     selfplay(a.out, iterations=a.iterations, games_per_iter=a.games, hidden=a.hidden, lr=a.lr,
              entropy=a.entropy, init=a.init, seed=a.seed, workers=a.workers,
              eval_every=a.eval_every, shaping=a.shaping, shaping_iters=a.shaping_iters,
-             start_iter=a.start_iter, eval_games=a.eval_games)
+             start_iter=a.start_iter, eval_games=a.eval_games, prior=a.prior)
 
 
 def cmd_crops(a):
@@ -169,6 +169,8 @@ def main(argv=None):
     s.add_argument("--shaping-iters", type=int, default=600,
                    help="iterations over which the progress reward fades out")
     s.add_argument("--start-iter", type=int, default=1, help="continue numbering from here (with --init)")
+    s.add_argument("--prior", type=float, default=2.5,
+                   help="start from the rules prior (keep the hand close to a legal win); 0 = blank start")
     s.set_defaults(func=cmd_selfplay)
 
     s = sub.add_parser("crops", help="cut tile images from a video for labelling")

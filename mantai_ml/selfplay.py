@@ -9,8 +9,12 @@ the ones that led to fewer less likely (actor-critic policy gradient). A
 value head learns how many units a position is worth, which is what
 "expected" means here.
 
-A model that starts from nothing almost never wins, so at first every game
-looks equally bad and nothing is learned. Early on it also gets a progress
+A new network starts from a rules prior (features.rules_prior): it already
+prefers discards that keep the hand close to a legal win with enough tai,
+and self-play learns what to change on top of that (defence, calls, reading
+the table). With --prior 0 it starts from nothing instead; such a model
+almost never wins, so at first every game looks equally bad and nothing is
+learned. Early on it also gets a progress
 reward taken from the rules ("complete shape first, then at least one tai",
 docs/07-08): a step closer to a winning shape, or reaching a ready hand
 that scores the minimum tai, is rewarded. That reward fades to nothing over
@@ -31,7 +35,7 @@ import random
 import numpy as np
 
 from .features import (N, STATE_SIZE, call_analysis, encode_call, encode_state,
-                       legal_mask, state_from_game)
+                       legal_mask, rules_prior, state_from_game)
 from .tiles import PLAY_TILES
 
 # Where features.discard_analysis sits in the state vector: shanten / 8,
@@ -66,7 +70,7 @@ class SamplingPolicy:
     choice with the units Player 1 had been paid before it."""
 
     def __init__(self, weights, rand, greedy=False):
-        self.discard_layers, self.call_layers = weights
+        self.discard_layers, self.call_layers, self.prior = weights
         self.rand = rand
         self.greedy = greedy
         self.discards = []      # (state, mask, action, instant before, progress after, best progress)
@@ -77,6 +81,8 @@ class SamplingPolicy:
         x = encode_state(**s)
         mask = legal_mask(s["hand"])
         logits = _mlp(x, self.discard_layers)
+        if self.prior:
+            logits = logits + self.prior * rules_prior(x)
         logits = np.where(mask > 0, logits, -1e9)
         if self.greedy:
             a = int(np.argmax(logits))
@@ -157,13 +163,14 @@ def play_games(weights, seeds, greedy=False):
 # Learning (torch, in the main process)
 # --------------------------------------------------------------------------
 def _numpy_weights(net):
-    """The policy's layers as numpy (W, b) pairs, for the workers."""
+    """The policy's layers as numpy (W, b) pairs, plus its rules prior weight,
+    for the workers."""
     from torch import nn
 
     def layers(seq):
         return [(m.weight.detach().cpu().numpy().T.copy(), m.bias.detach().cpu().numpy().copy())
                 for m in seq if isinstance(m, nn.Linear)]
-    return layers(net.discard), layers(net.call)
+    return layers(net.discard), layers(net.call), getattr(net, "prior", 0.0)
 
 
 def _ppo_update(net, critic, opt, X, M, A, R, XC, TK, RC, entropy, value_coef,
@@ -225,12 +232,14 @@ def _ppo_update(net, critic, opt, X, M, A, R, XC, TK, RC, entropy, value_coef,
 def selfplay(out_path, iterations=150, games_per_iter=400, hidden=256, lr=3e-4,
              entropy=0.01, value_coef=0.5, init=None, seed=0, workers=None,
              eval_every=25, ppo_epochs=4, batch_size=512, shaping=1.0, shaping_iters=600,
-             start_iter=1, eval_games=1000, log=print):
+             start_iter=1, eval_games=1000, prior=2.5, log=print):
     """Train the policy by self-play and save it (loadable by MLPolicy /
     `evaluate`), plus the best greedy-test version as <out>_best.pt.
 
     shaping       : weight of the progress reward at the start, in units
     shaping_iters : iterations over which it fades to zero
+    prior         : weight of the rules prior for a new network (see PolicyNet);
+                    a continued network keeps its own
     init          : continue from a saved policy (and its critic, if saved)
     start_iter    : iteration number to continue from (for the fade)"""
     import os
@@ -249,7 +258,7 @@ def selfplay(out_path, iterations=150, games_per_iter=400, hidden=256, lr=3e-4,
             if isinstance(m, nn.Dropout):
                 m.p = 0.0
     else:
-        net = PolicyNet(hidden=hidden, dropout=0.0)
+        net = PolicyNet(hidden=hidden, dropout=0.0, prior=prior)
     # Critic: how many units a position is worth to Player 1 from here on.
     critic = nn.Sequential(nn.Linear(STATE_SIZE, hidden), nn.ReLU(),
                            nn.Linear(hidden, hidden // 2), nn.ReLU(),
