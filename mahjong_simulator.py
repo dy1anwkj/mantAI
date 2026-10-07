@@ -1395,7 +1395,6 @@ def main(opponents="engine", seed=None):
     """Interactive game: you are Player 1. The game is saved for --review."""
     import game_log
     play_game(player1="human", delay=1.0, opponents=opponents, log_dir=game_log.DEFAULT_DIR, seed=seed)
-    game_log.upload_and_report(game_log.DEFAULT_DIR)
 
 
 # --------------------------------------------------------------------------
@@ -1481,22 +1480,13 @@ if __name__ == "__main__":
                         help="review a saved game (default: the latest one in data/games)")
     parser.add_argument("--replay", action="store_true",
                         help="with --review, also print the whole game move by move")
-    parser.add_argument("--fetch-games", action="store_true",
-                        help="download everyone's games from the games branch on GitHub")
     args = parser.parse_args()
     opponents = "random" if args.random_opponents else "engine"
-    if args.fetch_games:
+    if args.review:
         import game_log
-        added = game_log.fetch_games()
-        print(f"{len(added)} new game(s) in {os.path.relpath(game_log.DEFAULT_DIR)}")
-        for path in added:
-            print(f"  {os.path.basename(path)}  {game_log.summary(game_log.load(path))}")
-    elif args.review:
-        import game_log
-        path = game_log.find_log(args.review)
+        path = game_log.latest_log() if args.review == "latest" else args.review
         if path is None:
-            raise SystemExit("No such saved game." if args.review != "latest"
-                             else "No saved games yet: play one first.")
+            raise SystemExit("No saved games yet: play one first.")
         data = game_log.load(path)
         if args.replay:
             game_log.replay(data, verbose=True)
@@ -1509,6 +1499,5 @@ if __name__ == "__main__":
         import game_log
         play_game(player1="engine", delay=0, opponents=opponents,
                   log_dir=game_log.DEFAULT_DIR, seed=args.seed)
-        game_log.upload_and_report(game_log.DEFAULT_DIR)
     else:
         main(opponents, args.seed)

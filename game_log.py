@@ -9,15 +9,6 @@ it takes to replay the game exactly, even if the random seeding changes later.
     python3 mahjong_simulator.py --review FILE         # a given game
     python3 mahjong_simulator.py --review FILE --replay   # print it move by move
 
-Every game played at the terminal is also pushed to the "games" branch on
-GitHub (upload()), so games played by anyone with push access to the repo
-end up in one place. Nothing is committed to main and the player's working
-tree is never touched. Fetch everyone's games with:
-
-    python3 mahjong_simulator.py --fetch-games
-
-Set MANTAI_NO_UPLOAD=1 to keep games on this computer only.
-
 The review replays the game and, at every Player 1 decision, asks the tuned
 strategy engine what it would have done in the same position. It shows:
   - how the game ended and what Player 1 won or lost
@@ -30,18 +21,13 @@ strategy engine what it would have done in the same position. It shows:
   - every player's hand at the end
 """
 import datetime
-import getpass
 import glob
 import json
 import os
 import random
-import subprocess
-import tempfile
 
-REPO = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_DIR = os.path.join(REPO, "data", "games")
+DEFAULT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "games")
 VERSION = 1
-REMOTE, BRANCH, FOLDER = "origin", "games", "games"
 
 
 def _tile(t):
@@ -55,7 +41,6 @@ class GameLog:
         self.data = {
             "version": VERSION,
             "started": datetime.datetime.now().isoformat(timespec="seconds"),
-            "played_by": player_name(),
             "seed": seed,
             "player1": game.player1,
             "opponents": game.opponents,
@@ -90,153 +75,8 @@ class GameLog:
 
 
 def latest_log(log_dir=DEFAULT_DIR):
-    """The most recently started game (file names begin with the start time)."""
-    files = sorted(glob.glob(os.path.join(log_dir, "game_*.json")), key=os.path.basename)
+    files = sorted(glob.glob(os.path.join(log_dir, "game_*.json")), key=os.path.getmtime)
     return files[-1] if files else None
-
-
-def find_log(name, log_dir=DEFAULT_DIR):
-    """A path, or a file name in log_dir, or "latest"."""
-    if name == "latest":
-        return latest_log(log_dir)
-    if os.path.exists(name):
-        return name
-    path = os.path.join(log_dir, os.path.basename(name))
-    return path if os.path.exists(path) else None
-
-
-def player_name():
-    """Who is playing: their git user.name, else their login name."""
-    try:
-        name = _git("config", "user.name")
-    except (OSError, subprocess.SubprocessError):
-        name = ""
-    return name or getpass.getuser()
-
-
-# --------------------------------------------------------------------------
-# Sharing games through the "games" branch on GitHub
-# --------------------------------------------------------------------------
-class UploadError(Exception):
-    pass
-
-
-def _git(*args, env=None):
-    env = dict(os.environ if env is None else env, GIT_TERMINAL_PROMPT="0")
-    return subprocess.run(["git", *args], cwd=REPO, env=env, capture_output=True,
-                          text=True, timeout=60, check=True).stdout.strip()
-
-
-def _fetch_branch():
-    """The latest commit of the remote games branch, or None if it does not exist yet."""
-    try:
-        _git("fetch", "-q", REMOTE, f"+refs/heads/{BRANCH}:refs/remotes/{REMOTE}/{BRANCH}")
-    except subprocess.CalledProcessError as e:
-        if "couldn't find remote ref" in e.stderr:
-            return None
-        raise
-    return _git("rev-parse", f"refs/remotes/{REMOTE}/{BRANCH}")
-
-
-def _remote_games(commit):
-    if commit is None:
-        return set()
-    listing = _git("ls-tree", "--name-only", commit, f"{FOLDER}/")
-    return {os.path.basename(line) for line in listing.splitlines()}
-
-
-def upload(log_dir=DEFAULT_DIR, attempts=3):
-    """Push every saved game missing from the games branch in one commit.
-    Returns how many were pushed. Raises UploadError when it cannot."""
-    if os.environ.get("MANTAI_NO_UPLOAD"):
-        return 0
-    local = {os.path.basename(p): p for p in glob.glob(os.path.join(log_dir, "game_*.json"))}
-    try:
-        for _ in range(attempts):
-            parent = _fetch_branch()
-            new = sorted(set(local) - _remote_games(parent))
-            if not new:
-                return 0
-            with tempfile.TemporaryDirectory() as tmp:
-                name = player_name()
-                env = dict(os.environ, GIT_INDEX_FILE=os.path.join(tmp, "index"),
-                           GIT_AUTHOR_NAME=name, GIT_COMMITTER_NAME=name)
-                env.setdefault("GIT_AUTHOR_EMAIL", _email())
-                env.setdefault("GIT_COMMITTER_EMAIL", env["GIT_AUTHOR_EMAIL"])
-                if parent:
-                    _git("read-tree", parent, env=env)
-                for game in new:
-                    blob = _git("hash-object", "-w", local[game])
-                    _git("update-index", "--add", "--cacheinfo", f"100644,{blob},{FOLDER}/{game}", env=env)
-                tree = _git("write-tree", env=env)
-                message = f"Add {len(new)} game(s) played by {name}"
-                commit = _git("commit-tree", tree, *(["-p", parent] if parent else []), "-m", message, env=env)
-            try:
-                _git("push", "-q", REMOTE, f"{commit}:refs/heads/{BRANCH}")
-                return len(new)
-            except subprocess.CalledProcessError as e:
-                if "rejected" not in e.stderr and "fetch first" not in e.stderr:
-                    raise
-                # Someone else pushed a game meanwhile: fetch theirs and try again.
-        raise UploadError("the games branch kept changing; try again later")
-    except subprocess.CalledProcessError as e:
-        reason = (e.stderr or e.stdout or str(e)).strip().splitlines()
-        raise UploadError(reason[-1] if reason else str(e)) from None
-    except (OSError, subprocess.SubprocessError) as e:
-        raise UploadError(str(e)) from None
-
-
-def _email():
-    try:
-        return _git("config", "user.email") or "mantai@localhost"
-    except (OSError, subprocess.SubprocessError):
-        return "mantai@localhost"
-
-
-def upload_and_report(log_dir=DEFAULT_DIR):
-    """upload() for the terminal game: say what happened, never crash the game."""
-    if os.environ.get("MANTAI_NO_UPLOAD"):
-        return
-    print("Uploading to GitHub (games branch)...", end=" ", flush=True)
-    try:
-        n = upload(log_dir)
-    except UploadError as e:
-        print(f"failed: {e}")
-        print("The game is still saved on this computer and will upload after your next game.")
-        return
-    print(f"done ({n} game{'s' if n != 1 else ''})." if n else "already up to date.")
-
-
-def fetch_games(log_dir=DEFAULT_DIR):
-    """Copy every game on the games branch that is not in log_dir yet.
-    Returns the paths of the new files."""
-    try:
-        commit = _fetch_branch()
-        added = []
-        os.makedirs(log_dir, exist_ok=True)
-        for game in sorted(_remote_games(commit)):
-            path = os.path.join(log_dir, game)
-            if not os.path.exists(path):
-                with open(path, "w") as f:
-                    f.write(_git("show", f"{commit}:{FOLDER}/{game}"))
-                added.append(path)
-        return added
-    except subprocess.CalledProcessError as e:
-        raise UploadError((e.stderr or str(e)).strip()) from None
-
-
-def summary(data):
-    """One line: when, who, how Player 1 was played and how the game ended."""
-    r = data.get("result") or {}
-    winner = r.get("winner")
-    if winner is None:
-        end = "draw"
-    else:
-        how = "self-drawn" if r.get("self_drawn") else f"off Player {r['shooter'] + 1}"
-        end = f"Player {winner + 1} won {how}, {r.get('tai')} tai"
-    p1 = r.get("total", {}).get("0")
-    units = f", Player 1 {p1:+d} units" if p1 is not None else ""
-    return f"{data['started']}  {data.get('played_by', '?'):<12} P1={data['player1']:<6} {end}{units}"
 
 
 def load(path):
@@ -346,7 +186,7 @@ def review(data):
     who = lambda p: "Player 1 (you)" if p == 0 and data["player1"] == "human" else f"Player {p + 1}"
 
     styles = ", ".join(f"Player {int(p) + 1} {s}" for p, s in sorted(data["styles"].items()))
-    out(f"Game of {data['started']} played by {data.get('played_by', 'unknown')}  (seed {data['seed']})")
+    out(f"Game of {data['started']}  (seed {data['seed']})")
     out(f"Player 1: {data['player1']}.  Opponents: {styles}.")
     out(f"Dealer: Player {data['dealer'] + 1}.  Prevailing wind: {game.prevailing_wind.capitalize()}.  "
         f"Turns played: {r['turns']}.")
