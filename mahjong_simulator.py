@@ -39,12 +39,15 @@ OPPONENT_STYLES = {
     "cautious": {"danger": 300.0, "honor_pong_bonus": 8.0},
 }
 
-# Player 1's engine (also used for the human's hints). Against the opponents
-# above, defending harder paid off: danger 150 -> 700 took Player 1 from
-# about +0.2 to +0.56 units a game over 8000 games, with fewer deal-ins.
+# Player 1's engine (also used for the human's hints), tuned against the
+# opponents above with tune_engine.py (data/tuned_weights.json): on 20000
+# deals the search never saw, these weights won +1.21 units a game against
+# +0.58 for the previous {"danger": 700} (+0.63 +/- 0.08). The table-reading
+# rules from the study PDFs (fresh_danger, flush_danger, fold) did not win
+# more units here, so they stay off.
 # Plugging in R_opponent_analysis (StrategyEngine(opponent_model=...)) did
 # not beat the built-in danger estimate, so it stays off for now.
-PLAYER1_WEIGHTS = {"danger": 700.0}
+PLAYER1_WEIGHTS = {"ukeire": 1.5, "danger": 350.0, "draw_probability": 125.0, "tai_potential": 24.0}
 
 class MahjongGame:
     def __init__(self, dealer=None, wind_round=None, rand=None):
