@@ -1,3 +1,4 @@
+import os
 import random
 import time
 from collections import Counter
@@ -1313,21 +1314,29 @@ def self_turn_kongs(game, player):
 # One full game
 # --------------------------------------------------------------------------
 def play_game(game=None, player1="human", delay=1.0, verbose=True, check=False, setup=None,
-              opponents="engine"):
+              opponents="engine", log_dir=None, seed=None):
     """
     Play one hand of Singapore Mahjong and return the finished game.
     player1   : "human" (keyboard) or "engine" (Decision / Strategy engine)
     opponents : Players 2-4, "engine" (each with its own style) or "random"
     delay   : seconds to pause between turns (0 for simulations)
     check   : assert tile / hand-size invariants after every discard
+    log_dir : save the game there (see game_log.py) so it can be reviewed
+    seed    : seed for a new game's wall (with log_dir, a random one is picked)
     """
+    log = None
     if game is None:
-        game = MahjongGame()
+        if log_dir is not None and seed is None:
+            seed = random.SystemRandom().randrange(10 ** 9)
+        game = MahjongGame(rand=random.Random(seed) if seed is not None else None)
         game.player1 = player1
         game.opponents = opponents
         game.verbose = verbose
         if setup is not None:
             setup(game)         # e.g. attach a recorder or an ML policy
+        if log_dir is not None:
+            import game_log
+            log = game_log.GameLog(game, seed)
         game.deal()
     human = game.player1 == "human"
 
@@ -1345,7 +1354,10 @@ def play_game(game=None, player1="human", delay=1.0, verbose=True, check=False, 
     session = GameSession(game=game, check=check)
     while not session.is_over:
         turn = game.turns
-        session.apply(choose_action(game, session.decision))
+        action = choose_action(game, session.decision)
+        if log is not None:
+            log.add(session.decision, action)
+        session.apply(action)
         if delay and game.turns != turn:
             time.sleep(delay)
 
@@ -1357,6 +1369,10 @@ def play_game(game=None, player1="human", delay=1.0, verbose=True, check=False, 
     recorder = getattr(game, "recorder", None)
     if recorder is not None:
         recorder.on_game_end(game)
+    if log is not None:
+        path = log.save(session, log_dir)
+        print(f"\nGame saved to {os.path.relpath(path)}")
+        print("See why it went the way it did: python3 mahjong_simulator.py --review")
     return game
 
 
@@ -1375,9 +1391,10 @@ def _check_result(game):
     assert Counter(everything) == Counter(all_tiles), "tile count mismatch"
 
 
-def main(opponents="engine"):
-    """Interactive game: you are Player 1."""
-    play_game(player1="human", delay=1.0, opponents=opponents)
+def main(opponents="engine", seed=None):
+    """Interactive game: you are Player 1. The game is saved for --review."""
+    import game_log
+    play_game(player1="human", delay=1.0, opponents=opponents, log_dir=game_log.DEFAULT_DIR, seed=seed)
 
 
 # --------------------------------------------------------------------------
@@ -1459,13 +1476,28 @@ if __name__ == "__main__":
                         help="watch one game with the engine playing Player 1")
     parser.add_argument("--random-opponents", action="store_true",
                         help="Players 2-4 discard and call at random instead of playing properly")
+    parser.add_argument("--review", nargs="?", const="latest", metavar="FILE",
+                        help="review a saved game (default: the latest one in data/games)")
+    parser.add_argument("--replay", action="store_true",
+                        help="with --review, also print the whole game move by move")
     args = parser.parse_args()
     opponents = "random" if args.random_opponents else "engine"
-    if args.simulate:
+    if args.review:
+        import game_log
+        path = game_log.latest_log() if args.review == "latest" else args.review
+        if path is None:
+            raise SystemExit("No saved games yet: play one first.")
+        data = game_log.load(path)
+        if args.replay:
+            game_log.replay(data, verbose=True)
+            print()
+        print(f"Review of {os.path.relpath(path)}\n")
+        print(game_log.review(data))
+    elif args.simulate:
         print_report(simulate(args.simulate, seed=args.seed, opponents=opponents))
     elif args.auto:
-        if args.seed is not None:
-            rng = random.Random(args.seed)
-        play_game(player1="engine", delay=0, opponents=opponents)
+        import game_log
+        play_game(player1="engine", delay=0, opponents=opponents,
+                  log_dir=game_log.DEFAULT_DIR, seed=args.seed)
     else:
-        main(opponents)
+        main(opponents, args.seed)
