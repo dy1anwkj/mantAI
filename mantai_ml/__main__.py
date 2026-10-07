@@ -6,9 +6,11 @@ mantAI machine learning command line. Run from the project folder:
     python -m mantai_ml train    --data data/sim.jsonl --out models/policy.pt
     python -m mantai_ml evaluate --model models/policy.pt --games 500
 
-  Self-play (the model teaches itself under the rules; no copying)
-    python -m mantai_ml selfplay --iterations 150 --games 400 --out models/selfplay.pt
-    python -m mantai_ml evaluate --model models/selfplay.pt --games 1000 --compare
+  Self-play (AlphaGo-style: starts from the study library in docs/, then
+  teaches itself under the rules; no copying)
+    python -m mantai_ml selfplay --iterations 1200 --games 400 --shaping 0 --out models/alpha.pt
+    python -m mantai_ml evaluate --model models/alpha_best.pt --games 1000 --compare
+    python -m mantai_ml evaluate --model models/alpha_best.pt --games 200 --search 64 --compare
 
   Video
     python -m mantai_ml crops       --video game.mp4 --out crops/ [--config roi.json]
@@ -51,9 +53,14 @@ def cmd_train(a):
 
 def cmd_evaluate(a):
     import mahjong_simulator as sim
-    from .ml_player import evaluate_policy
-    stats = evaluate_policy(a.model, a.games, seed=a.seed)
-    sim.print_report(stats, label="Player 1 = ML model")
+    if a.search:
+        from .search import evaluate_search
+        stats = evaluate_search(a.model, a.games, a.search, seed=a.seed)
+        sim.print_report(stats, label=f"Player 1 = search ({a.search} playouts a discard)")
+    else:
+        from .ml_player import evaluate_policy
+        stats = evaluate_policy(a.model, a.games, seed=a.seed)
+        sim.print_report(stats, label="Player 1 = ML model")
     if a.compare:
         sim.print_report(sim.simulate(a.games, seed=a.seed, progress=False), label="Player 1 = strategy engine")
 
@@ -150,6 +157,8 @@ def main(argv=None):
     s.add_argument("--games", type=int, default=500)
     s.add_argument("--seed", type=int)
     s.add_argument("--compare", action="store_true", help="also run the strategy engine for comparison")
+    s.add_argument("--search", type=int, default=0,
+                   help="play with AlphaGo-style search, this many playouts per discard (0 = network alone)")
     s.set_defaults(func=cmd_evaluate)
 
     s = sub.add_parser("selfplay", help="train the policy by self-play (reinforcement learning)")
@@ -170,7 +179,7 @@ def main(argv=None):
                    help="iterations over which the progress reward fades out")
     s.add_argument("--start-iter", type=int, default=1, help="continue numbering from here (with --init)")
     s.add_argument("--prior", type=float, default=2.5,
-                   help="start from the rules prior (keep the hand close to a legal win); 0 = blank start")
+                   help="start from the study library's opinion (features.book_prior); 0 = blank start")
     s.set_defaults(func=cmd_selfplay)
 
     s = sub.add_parser("crops", help="cut tile images from a video for labelling")

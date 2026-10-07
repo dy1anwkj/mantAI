@@ -22,7 +22,8 @@ remaining animation and shows the current game state.
 Stop the server with Ctrl+C. If port 8000 is occupied, run with `--port 8001`
 and open http://127.0.0.1:8001 instead.
 
-No Node.js or additional Python packages are required. `web_game.py` serves
+No Node.js is required. The trained models need torch; without it the game
+runs on the strategy engine alone. `web_game.py` serves
 the HTML/CSS/JavaScript in `web/` and calls the existing `GameSession` and
 strategy engine. The browser receives only your concealed hand, public tiles,
 and currently legal actions; it does not calculate game rules.
@@ -43,9 +44,27 @@ Validation:
 .\venv\Scripts\python.exe -B -m unittest test_web_game -v
 ```
 
-On each discard turn, the strategy engine recommends a tile. The displayed
-win percentage estimates winning the current hand after that discard from 64
-simulated continuations, using your hand and public information. It is a noisy
+Decisions are made the way AlphaGo made them (`mantai_ml/search.py`):
+
+1. The 17 study PDFs in `docs/` are read into the network's inputs and its
+   starting opinion (`mantai_ml/knowledge.py`): shape and tile efficiency,
+   what to throw first, the tai route, defence (suji, kabe, flush threats,
+   when to fold) and SPGG's late fresh-tile rule.
+2. Self-play trained the network from there (`models/alpha_best.pt`) and a
+   value network that estimates what a position is worth.
+3. Before every discard, the network's likeliest tiles (plus the strategy
+   engine's choice) are played out on many guessed deals of the hidden tiles.
+   Each playout is scored by the value network and by the units actually won.
+   The network's favourite is played unless another tile clearly did better.
+
+Your recommendation searches 160 playouts; each AI discard 64. The
+recommendation names the network's confidence and the other tiles it searched.
+`web_game.py --engine-only` plays against the strategy engine alone; without
+torch or a trained network the game says so and does the same.
+
+On each discard turn, the recommended tile is shown. The displayed
+win percentage estimates winning the current hand after that discard from the
+searched continuations, using your hand and public information. It is a noisy
 estimate, not a guarantee or an exact probability. Calculating it can take several
 seconds. Recommendations are cached until your next action.
 

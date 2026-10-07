@@ -1,7 +1,7 @@
 """
 Turn a game state into numbers a neural network can read.
 
-State vector (STATE_SIZE = 249):
+State vector (STATE_SIZE = 387):
     34  concealed hand, count of each tile / 4
     34  own exposed melds, count / 4
     34  other visible tiles (all discards + other players' melds), count / 4
@@ -16,6 +16,10 @@ State vector (STATE_SIZE = 249):
         34  shanten after throwing that tile (/ 8), 1 if not in hand
         34  useful tiles left to draw after throwing it (/ 60)
         34  1 if throwing it leaves a ready hand that can reach the minimum tai
+   138  the study library's reading of each discard (knowledge.py): how
+        expendable it is, what it costs the tai route, how dangerous it
+        is, whether it is a fresh tile late in the hand, plus the table's
+        threat and how strongly the books say to fold
 
 Call vector (CALL_SIZE = 292) adds the offered tile (34, one-hot), the call type (4, one-hot)
 and 5 analysis numbers: shanten / useful tiles before and after the call, and
@@ -26,13 +30,16 @@ from collections import Counter
 
 import numpy as np
 
+from .knowledge import KNOWLEDGE_SIZE, knowledge_planes
 from .tiles import PLAY_TILES, TILE_INDEX, sg
 import Decision_Strategy_engine as de
 
 WINDS = ("east", "south", "west", "north")
 CALL_TYPES = ("pong", "chi", "kong", "self_kong")
 N = len(PLAY_TILES)
-STATE_SIZE = 4 * N + 4 + 4 + 3 + 3 * N
+ANALYSIS_AT = 4 * N + 4 + 4 + 3            # where the discard analysis starts
+BOOK_AT = ANALYSIS_AT + 3 * N              # where the knowledge planes start
+STATE_SIZE = BOOK_AT + KNOWLEDGE_SIZE
 CALL_SIZE = STATE_SIZE + N + len(CALL_TYPES) + 5
 
 
@@ -71,8 +78,25 @@ def rules_prior(x):
     plus one for a ready hand that reaches the minimum tai. This is the
     "complete shape first, then at least one tai" lesson of docs/03, 04, 07
     and 08. Tiles not in the hand score -8 (they are masked out anyway)."""
-    a = STATE_SIZE - 3 * N
+    a = ANALYSIS_AT
     return -8 * x[..., a:a + N] + 2 * x[..., a + N:a + 2 * N] + x[..., a + 2 * N:a + 3 * N]
+
+
+def book_prior(x):
+    """The whole study library's preference for each discard: the rules prior
+    (shape and tai, docs/03, 04, 07, 08) plus the book planes - throw what is
+    expendable (docs/00, 12, 17), keep the tai route (docs/00, 01, 07, 08),
+    and avoid dangerous and late fresh tiles (docs/02, 12), much harder once
+    the books say to fold (docs/00, 12). This is what AlphaGo's search took
+    from its expert-trained network: a starting opinion that search and
+    self-play then correct."""
+    b = BOOK_AT
+    pri, tai = x[..., b:b + N], x[..., b + N:b + 2 * N]
+    danger, fresh = x[..., b + 2 * N:b + 3 * N], x[..., b + 3 * N:b + 4 * N]
+    fold = x[..., b + 4 * N + 1:b + 4 * N + 2]
+    ready = x[..., ANALYSIS_AT + 2 * N:ANALYSIS_AT + 3 * N]
+    return (rules_prior(x) + 2.0 * pri - 1.5 * tai
+            - (0.5 + 4.0 * fold) * danger - 1.0 * fresh * (1 - ready))
 
 
 def _counts(tiles):
@@ -84,7 +108,7 @@ def _counts(tiles):
     return v
 
 
-def encode_state(hand, melds, visible, bonus, seat, prevailing, wall_left):
+def encode_state(hand, melds, visible, bonus, seat, prevailing, wall_left, opponents=None):
     own_meld_tiles = [t for m in melds for t in m]
     h = _counts(hand)
     m = _counts(own_meld_tiles)
@@ -102,12 +126,14 @@ def encode_state(hand, melds, visible, bonus, seat, prevailing, wall_left):
     ], dtype=np.float32)
     ctx = de.TaiContext(bonus=list(bonus), seat=seat, prevailing=prevailing, min_tai=sg.MIN_TAI)
     analysis = discard_analysis(list(hand), [list(x) for x in melds], list(visible) + own_meld_tiles, ctx)
-    return np.concatenate([h / 4, m / 4, vis / 4, unseen / 4, seat_v, prev_v, extra, analysis])
+    book = knowledge_planes(list(hand), [list(x) for x in melds], list(visible), list(bonus),
+                            seat, prevailing, wall_left, opponents, analysis[:N] * 8)
+    return np.concatenate([h / 4, m / 4, vis / 4, unseen / 4, seat_v, prev_v, extra, analysis, book])
 
 
 def encode_record(r):
     return encode_state(r["hand"], r["melds"], r["visible"], r["bonus"],
-                        r["seat"], r["prevailing"], r.get("wall_left"))
+                        r["seat"], r["prevailing"], r.get("wall_left"), r.get("opponents"))
 
 
 _engine = de.StrategyEngine()
@@ -160,6 +186,32 @@ def call_analysis(hand, melds, visible, bonus, seat, prevailing, tile, call_type
     return np.array([clip(s0), min(u0, 60) / 60, clip(s1), min(u1, 60) / 60, 1], dtype=np.float32)
 
 
+def call_prior(xc):
+    """The study library's opinion of a call, as a logit (numpy or torch, one
+    row or a batch), from the call analysis at the end of the call vector:
+    call when it brings the hand closer to a legal win, not merely because
+    you can (docs/00 section 4, docs/17 lesson 3 and exercise 4); a Pong of a
+    scoring honour keeps the tai route (docs/00 section 5, docs/07-08); a Kong
+    pays at once and draws a replacement under these rules, but should not
+    cost shape (docs/00 "Kong decisions need care", docs/01, docs/02)."""
+    a = xc[..., -5:]
+    steps = (a[..., 0:1] - a[..., 2:3]) * 8           # shanten gained
+    useful = (a[..., 3:4] - a[..., 1:2]) * 6           # useful tiles gained / 10
+    t, c = xc[..., STATE_SIZE:STATE_SIZE + N], xc[..., STATE_SIZE + N:STATE_SIZE + N + len(CALL_TYPES)]
+    seat = xc[..., 4 * N:4 * N + 4]
+    prevailing = xc[..., 4 * N + 4:4 * N + 8]
+    winds = t[..., _WIND_AT:_WIND_AT + 4]
+    scoring = (t[..., _DRAGON_AT:_DRAGON_AT + 3].sum(-1, keepdims=True)
+               + (winds * seat).sum(-1, keepdims=True) + (winds * prevailing).sum(-1, keepdims=True))
+    scoring = (scoring > 0) * 1.0
+    pong_or_kong = c[..., 0:1] + c[..., 2:3] + c[..., 3:4]
+    kong = c[..., 2:3] + c[..., 3:4]
+    not_worse = (steps >= 0) * 1.0
+    logit = (2.5 * steps + 0.3 * useful - 0.75 + 1.5 * scoring * pong_or_kong * not_worse
+             + 1.5 * kong * not_worse - 10.0 * (1 - a[..., 4:5]))
+    return logit[..., 0]
+
+
 def encode_call(state_vec, tile, call_type, analysis=None):
     t = np.zeros(N, dtype=np.float32)
     if tile in TILE_INDEX:
@@ -175,6 +227,11 @@ def encode_call_record(state_vec, r):
     a = call_analysis(r["hand"], r["melds"], r["visible"] + [x for m in r["melds"] for x in m],
                       r["bonus"], r["seat"], r["prevailing"], r["tile"], r["call_type"])
     return encode_call(state_vec, r["tile"], r["call_type"], a)
+
+
+_WIND_AT = PLAY_TILES.index(("wind", "east"))
+_DRAGON_AT = min(i for i, t in enumerate(PLAY_TILES) if t[0] == "dragon")
+assert [t[1] for t in PLAY_TILES[_WIND_AT:_WIND_AT + 4]] == list(WINDS)
 
 
 def legal_mask(hand):
@@ -194,6 +251,7 @@ def state_from_game(game, player):
         if i != player:
             for meld in game.melds[i]:
                 visible += meld
+    others = [(player + k) % 4 for k in (1, 2, 3)]
     return dict(
         hand=list(game.hands[player]),
         melds=[list(m) for m in game.melds[player]],
@@ -202,4 +260,6 @@ def state_from_game(game, player):
         seat=game.seat(player),
         prevailing=game.prevailing_wind,
         wall_left=len(game.wall),
+        opponents=[{"discards": list(game.discards[p]), "melds": [list(m) for m in game.melds[p]]}
+                   for p in others],
     )

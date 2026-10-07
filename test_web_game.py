@@ -1,5 +1,7 @@
 """Integration checks for the local browser adapter."""
 import json
+import os
+import tempfile
 import threading
 import unittest
 from unittest.mock import patch
@@ -108,6 +110,38 @@ class TableTests(unittest.TestCase):
             # All backend tile-count invariants ran after each discard.
             self.assertNotIn("hands", state)
             self.assertIsInstance(state["wall"], int)
+
+    def test_search_plays_opponents_and_explains_the_recommendation(self):
+        try:
+            import torch
+            from torch import nn
+            from mantai_ml.features import STATE_SIZE
+            from mantai_ml.model import PolicyNet, save_model
+            from mantai_ml.search import AlphaSearch
+        except ImportError:
+            self.skipTest("torch is not installed")
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "alpha_best.pt")
+            save_model(path, PolicyNet(hidden=16, dropout=0.0, prior=2.5))
+            critic = nn.Sequential(nn.Linear(STATE_SIZE, 8), nn.ReLU(), nn.Linear(8, 4), nn.ReLU(), nn.Linear(4, 1))
+            torch.save(critic.state_dict(), os.path.join(folder, "alpha_critic.pt"))
+            brain = AlphaSearch(path, simulations=8, batch=4, max_candidates=2, parallel=False, seed=1)
+        table = Table(brain)
+        table.new(seed=7)
+        self.assertEqual(table.state()["brain"], "alphago-search")
+        with patch("web_game.HINT_SIMULATIONS", 8):
+            hint = table.hint(table.revision)["recommendation"]
+        legal = [a.tile for a in table.session.legal_actions() if a.kind == "discard"]
+        self.assertIn(hint["tile"], legal)
+        self.assertGreater(hint["samples"], 0)
+        self.assertIn(hint["tile"], [c["tile"] for c in hint["candidates"]])
+        for _ in range(3):      # your discards, then the searched AI turns
+            if table.session.is_over:
+                break
+            index = next(i for i, a in enumerate(table.session.legal_actions())
+                         if a.kind in ("discard", "pass"))
+            table.act(index, table.revision)
+        self.assertTrue(table.session.is_over or table.session.current_player == 0)
 
     def test_bad_and_stale_actions_do_not_change_table(self):
         table = Table()

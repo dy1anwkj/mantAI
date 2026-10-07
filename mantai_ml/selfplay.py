@@ -9,7 +9,8 @@ the ones that led to fewer less likely (actor-critic policy gradient). A
 value head learns how many units a position is worth, which is what
 "expected" means here.
 
-A new network starts from a rules prior (features.rules_prior): it already
+A new network starts from the book prior (features.book_prior, the study
+library in docs/ read by knowledge.py): it already
 prefers discards that keep the hand close to a legal win with enough tai,
 and self-play learns what to change on top of that (defence, calls, reading
 the table). With --prior 0 it starts from nothing instead; such a model
@@ -34,13 +35,13 @@ import random
 
 import numpy as np
 
-from .features import (N, STATE_SIZE, call_analysis, encode_call, encode_state,
-                       legal_mask, rules_prior, state_from_game)
+from .features import (ANALYSIS_AT, N, STATE_SIZE, book_prior, call_analysis, call_prior, encode_call,
+                       encode_state, legal_mask, state_from_game)
 from .tiles import PLAY_TILES
 
 # Where features.discard_analysis sits in the state vector: shanten / 8,
 # useful tiles / 60 and ready-with-tai, one value per tile thrown.
-_ANALYSIS = STATE_SIZE - 3 * N
+_ANALYSIS = ANALYSIS_AT
 SHAPING_DISCOUNT = 0.8   # per own discard: progress counts most for the discards just before it
 
 
@@ -82,7 +83,7 @@ class SamplingPolicy:
         mask = legal_mask(s["hand"])
         logits = _mlp(x, self.discard_layers)
         if self.prior:
-            logits = logits + self.prior * rules_prior(x)
+            logits = logits + self.prior * book_prior(x)
         logits = np.where(mask > 0, logits, -1e9)
         if self.greedy:
             a = int(np.argmax(logits))
@@ -104,7 +105,10 @@ class SamplingPolicy:
         a = call_analysis(s["hand"], s["melds"], s["visible"] + own, s["bonus"],
                           s["seat"], s["prevailing"], tile, call_type)
         xc = encode_call(x, tile, call_type, a)
-        p = 1.0 / (1.0 + np.exp(-float(_mlp(xc, self.call_layers)[0])))
+        logit = float(_mlp(xc, self.call_layers)[0])
+        if self.prior:
+            logit += float(call_prior(xc))
+        p = 1.0 / (1.0 + np.exp(-logit))
         taken = p >= 0.5 if self.greedy else self.rand.random() < p
         self.calls.append((xc, float(taken), game.instant[player], len(self.discards)))
         return bool(taken)

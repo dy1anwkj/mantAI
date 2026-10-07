@@ -3,9 +3,9 @@
 import torch
 from torch import nn
 
-from .features import CALL_SIZE, N, STATE_SIZE, rules_prior
+from .features import CALL_SIZE, N, STATE_SIZE, book_prior, call_prior
 
-FEATURE_VERSION = 2
+FEATURE_VERSION = 3
 
 
 def pick_device(prefer=None):
@@ -19,9 +19,9 @@ def pick_device(prefer=None):
 
 
 class PolicyNet(nn.Module):
-    """prior: weight of features.rules_prior added to the discard scores, so
-    a new network already prefers discards that keep the hand close to a
-    legal win and only learns what to change on top of that (0 = off)."""
+    """prior: weight of features.book_prior (the study library in docs/)
+    added to the discard scores, so a new network already plays the way the
+    books say and only learns what to change on top of that (0 = off)."""
 
     def __init__(self, hidden=256, dropout=0.1, prior=0.0):
         super().__init__()
@@ -40,12 +40,15 @@ class PolicyNet(nn.Module):
     def discard_logits(self, state, mask):
         logits = self.discard(state)
         if self.prior:
-            logits = logits + self.prior * rules_prior(state)
+            logits = logits + self.prior * book_prior(state)
         # Tiles not in the hand can never be discarded.
         return logits.masked_fill(mask == 0, -1e9)
 
     def call_logit(self, call_input):
-        return self.call(call_input).squeeze(-1)
+        logit = self.call(call_input).squeeze(-1)
+        if self.prior:
+            logit = logit + call_prior(call_input)
+        return logit
 
 
 def save_model(path, net, metrics=None):

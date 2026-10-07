@@ -45,8 +45,9 @@ OPPONENT_STYLES = {
 # +0.58 for the previous {"danger": 700} (+0.63 +/- 0.08). The table-reading
 # rules from the study PDFs (fresh_danger, flush_danger, fold) did not win
 # more units here, so they stay off.
-# Plugging in R_opponent_analysis (StrategyEngine(opponent_model=...)) did
-# not beat the built-in danger estimate, so it stays off for now.
+# R_opponent_analysis is now a learned danger model (models/danger.npz). The
+# browser game gives it to your seat's engine; simulations here leave it off
+# until it is measured against the built-in danger estimate.
 PLAYER1_WEIGHTS = {"ukeire": 1.5, "danger": 350.0, "draw_probability": 125.0, "tai_potential": 24.0}
 
 class MahjongGame:
@@ -666,12 +667,19 @@ def rate_discards(game, player_index, tiles, playouts=None, seed=None, parallel=
     return ratings
 
 
-def recommend_discard(game, player_index, playouts=None, seed=None, parallel=True):
+def recommend_discard(game, player_index, playouts=None, seed=None, parallel=True,
+                      engine=None, candidates=None):
     """(tile, its rating) to discard. The engine's choice stands unless a tile
     that survived to the final round won more units over the same deals by
     more than two standard errors, so luck of the playouts alone rarely
-    overturns it."""
-    ranked = [r["tile"] for r in engine_discard_decision(game, player_index, game.strategy).details]
+    overturns it.
+
+    engine     : the StrategyEngine whose choice is the baseline (default game.strategy)
+    candidates : the tiles to try against it (e.g. trained models' choices);
+                 by default every tile the engine ranked"""
+    ranked = [r["tile"] for r in engine_discard_decision(game, player_index, engine or game.strategy).details]
+    if candidates is not None:
+        ranked = [ranked[0]] + [t for t in dict.fromkeys(candidates) if t != ranked[0]]
     ratings = rate_discards(game, player_index, ranked, playouts, seed, parallel)
     baseline = ranked[0]
     n = ratings[baseline]["playouts"]

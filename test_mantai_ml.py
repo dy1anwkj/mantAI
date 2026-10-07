@@ -11,7 +11,10 @@ import pytest
 torch = pytest.importorskip("torch")
 cv2 = pytest.importorskip("cv2")
 
+import numpy as np
+
 import mahjong_simulator as sim
+import singapore_rules as sg
 from mantai_ml.features import CALL_SIZE, STATE_SIZE, encode_call_record, encode_record
 from mantai_ml.recorder import record_games
 from mantai_ml.records import read_records
@@ -212,3 +215,139 @@ def test_rules_prior_prefers_discards_closer_to_a_win(tmp_path):
     assert logits.argmax().item() == TILE_INDEX[('wind', 'north')]
     save_model(tmp_path / "p.pt", net)
     assert load_model(tmp_path / "p.pt")[0].prior == 2.5
+
+
+
+# ---------------------------------------------------------------------------
+# The study library (docs/) as the network reads it: knowledge.py, book_prior
+# ---------------------------------------------------------------------------
+def W(*r):
+    return [('wan', x) for x in r]
+
+
+def D(*r):
+    return [('dot', x) for x in r]
+
+
+def _book_top(hand, visible=(), wall=100, opponents=None):
+    from mantai_ml.features import book_prior, encode_state, legal_mask
+    from mantai_ml.tiles import PLAY_TILES
+    opponents = opponents or [{"discards": [], "melds": []}] * 3
+    x = encode_state(hand, [], list(visible), [], 1, "east", wall, opponents)
+    scores = book_prior(x)
+    return PLAY_TILES[int(max(range(len(scores)), key=lambda i: scores[i] if legal_mask(hand)[i] else -1e9))], x
+
+
+def test_docs_17_exercise_2_counts_unseen_copies_once():
+    import Decision_Strategy_engine as de
+    # 6-7 dots waits on 5 or 8; two 5 dots discarded, one 8 dot in a meld.
+    unseen = de.unseen_counts(D(6, 7), D(5, 5, 8))
+    assert unseen[('dot', 5)] + unseen[('dot', 8)] == 5
+
+
+def test_docs_17_exercise_1_book_keeps_the_two_sided_shapes():
+    # Two two-sided shapes (3-4 bamboo, 7-8 dots) and an edge (8-9 bamboo):
+    # the edge accepts 4 copies, each two-sided shape 8, so the edge goes.
+    hand = W(1, 2, 3) + W(4, 5, 6) + W(9, 9) + B(3, 4) + B(8, 9) + D(7, 8)
+    tile, _ = _book_top(hand)
+    assert tile in B(8, 9)
+
+
+def test_docs_00_and_17_exercise_3_isolated_honour_goes_before_a_flexible_tile():
+    # 3-4-5-6 wan is two two-sided shapes, not a run plus a spare 6; the lone
+    # North and South winds (not East's seat or round wind) score nothing.
+    hand = W(3, 4, 5, 6) + B(1, 2, 3) + D(4, 5, 6) + D(9, 9) + [('wind', 'north'), ('wind', 'south')]
+    tile, _ = _book_top(hand)
+    assert tile in [('wind', 'north'), ('wind', 'south')]
+
+
+def test_docs_07_08_complete_shape_first_then_at_least_one_tai():
+    red, west = [('dragon', 'red')] * 3, [('wind', 'west')] * 3
+    hand = W(1, 2, 3) + W(1, 2, 3) + D(7, 8, 9) + D(9, 9)
+    assert sg.score_hand(hand + red, [], [], 1, "east")["tai"] == 1      # Red Dragon Pong: Hu
+    assert sg.score_hand(hand + west, [], [], 1, "east")["tai"] < sg.MIN_TAI   # West: no Hu
+    # ... and the book keeps that scoring pair rather than a spare tile.
+    tile, _ = _book_top(W(1, 2, 3) + W(4, 5, 6) + D(7, 8, 9) + B(5) + [('dragon', 'red')] * 2 + D(1, 1))
+    assert tile != ('dragon', 'red')
+
+
+def test_docs_00_02_12_book_defends_against_a_visible_flush_late():
+    from mantai_ml.features import BOOK_AT, N
+    from mantai_ml.tiles import TILE_INDEX
+    hand = W(1, 2, 4, 7, 9) + D(2, 3, 5, 8, 9) + B(5) + [('wind', 'north')] * 2 + [('dragon', 'white')]
+    assert _book_top(hand)[0] == ('bamboo', 5)          # nobody threatens: the lone 5 bamboo goes
+    flush = {"discards": [('dragon', 'white'), ('wan', 9)], "melds": [B(1, 2, 3), B(6, 7, 8), B(2, 2, 2)]}
+    visible = B(1, 2, 3) + B(6, 7, 8) + B(2, 2, 2) + [('dragon', 'white'), ('wan', 9)]
+    quiet = {"discards": [], "melds": []}
+    tile, x = _book_top(hand, visible, wall=30, opponents=[flush, quiet, quiet])
+    assert x[BOOK_AT + 4 * N + 1] > 0.5                 # slow hand under threat: fold
+    danger = lambda t: x[BOOK_AT + 2 * N + TILE_INDEX[t]]
+    assert danger(('bamboo', 5)) > danger(('wan', 9))    # their suit vs a tile they threw
+    assert tile == ('wan', 9)
+
+
+def test_docs_12_suji_and_kabe_lower_danger():
+    from collections import Counter
+    from mantai_ml.knowledge import tile_danger
+    plain = tile_danger(('dot', 4), set(), Counter())
+    assert tile_danger(('dot', 4), {('dot', 1), ('dot', 7)}, Counter()) < plain      # suji
+    assert tile_danger(('dot', 4), set(), Counter({('dot', 3): 4, ('dot', 5): 4})) < plain   # kabe
+    assert tile_danger(('wind', 'north'), set(), Counter({('wind', 'north'): 3})) < 0.05
+    assert tile_danger(('dot', 1), set(), Counter()) < plain                            # terminal
+
+
+def test_book_call_prior_follows_docs_00_and_17():
+    from mantai_ml.features import call_prior, encode_call, encode_state
+    hand = W(1, 2, 3) + W(5, 6) + D(3, 4) + [('dragon', 'red')] * 2 + B(2, 5, 8) + [('wind', 'north')]
+    x = encode_state(hand, [], [], [], 1, "east", 100)
+    useful = encode_call(x, ('dragon', 'red'), "pong", np.array([3 / 8, 0.3, 2 / 8, 0.3, 1], dtype=np.float32))
+    pointless = encode_call(x, ('bamboo', 8), "pong", np.array([3 / 8, 0.3, 3 / 8, 0.25, 1], dtype=np.float32))
+    assert float(call_prior(useful)) > 0 > float(call_prior(pointless))
+
+
+# ---------------------------------------------------------------------------
+# AlphaGo-style search (search.py)
+# ---------------------------------------------------------------------------
+def _tiny_model(tmp_path):
+    from torch import nn
+    from mantai_ml.features import STATE_SIZE
+    from mantai_ml.model import PolicyNet, save_model
+    torch.manual_seed(0)
+    save_model(str(tmp_path / "alpha_best.pt"), PolicyNet(hidden=16, dropout=0.0, prior=2.5))
+    critic = nn.Sequential(nn.Linear(STATE_SIZE, 16), nn.ReLU(), nn.Linear(16, 8), nn.ReLU(), nn.Linear(8, 1))
+    torch.save(critic.state_dict(), tmp_path / "alpha_critic.pt")
+    return str(tmp_path / "alpha_best.pt")
+
+
+def test_search_finds_the_critic_and_plays_legal_discards_for_every_seat(tmp_path):
+    from mantai_ml.search import AlphaSearch, critic_path, decide
+    path = _tiny_model(tmp_path)
+    assert critic_path(path) == str(tmp_path / "alpha_critic.pt")
+    search = AlphaSearch(path, simulations=8, batch=4, max_candidates=2, parallel=False, seed=1)
+    assert search.critic is not None
+    game = sim.MahjongGame(rand=random.Random(3))
+    game.player1, game.verbose = "engine", False
+    game.deal()
+    session = sim.GameSession(game=game, check=True)
+    searched = set()
+    while not session.is_over and len(searched) < 4:
+        d = session.decision
+        action = decide(search, game, d)
+        assert action in session.legal_actions()
+        if action.kind == "discard":
+            found = search.last
+            assert found["tile"] == action.tile
+            assert {c["tile"] for c in found["candidates"]} >= {found["engine"], action.tile}
+            searched.add(d.player)
+        session.apply(action)
+
+
+def test_search_keeps_the_favourite_unless_another_tile_clearly_wins(tmp_path):
+    from mantai_ml.search import AlphaSearch
+    search = AlphaSearch(_tiny_model(tmp_path), batch=4, parallel=False)
+    a, b = ('dot', 1), ('dot', 2)
+    priors = {a: 0.7, b: 0.3}
+    noisy = {a: {"scores": [1, -1, 2, 0, 1, -2, 0, 1]}, b: {"scores": [2, -2, 2, 1, 0, -2, 1, 0]}}
+    assert search._decide([a, b], priors, noisy) == a
+    clear = {a: {"scores": [0, -1, 1, 0, 0, -1, 1, 0]}, b: {"scores": [5, 4, 6, 5, 5, 4, 6, 5]}}
+    assert search._decide([a, b], priors, clear) == b

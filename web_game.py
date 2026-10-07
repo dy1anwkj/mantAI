@@ -2,6 +2,11 @@
 
 Run: python web_game.py, then open http://127.0.0.1:8000.
 One shared table per server process; intended for local single-player use.
+By default Players 2-4 and your recommended discard are chosen the way
+AlphaGo chose moves (mantai_ml/search.py): the self-play network trained from
+the study library in docs/ proposes discards, and a search over guessed deals,
+scored by its value network and by rollouts, decides. --engine-only plays the
+strategy engine alone.
 """
 import argparse
 from copy import deepcopy
@@ -12,14 +17,25 @@ from pathlib import Path
 import secrets
 from urllib.parse import urlsplit
 
-from mahjong_simulator import GameSession, choose_action, engine_discard_decision, rate_discards
+from mahjong_simulator import PLAYER1_WEIGHTS, GameSession, choose_action, engine_discard_decision, rate_discards
 import singapore_rules as sg
+from Decision_Strategy_engine import StrategyEngine
+from R_opponent_analysis import OpponentAnalyzer, load_danger_model
+try:
+    from mantai_ml.search import DEFAULT_MODEL, AlphaSearch, decide
+except ImportError:          # the trained models need torch; without it the engine plays alone
+    AlphaSearch = None
 
 STATIC = Path(__file__).parent / "web"
+HINT_SIMULATIONS = 160       # searched playouts behind your recommended discard
+OPPONENT_SIMULATIONS = 64    # ... and behind each AI discard
 
 
 class Table:
-    def __init__(self):
+    def __init__(self, brain=None):
+        """brain: an AlphaSearch that plays Players 2-4 and recommends your
+        discard; None leaves both to the strategy engine."""
+        self.brain = brain
         self.session = None
         self.revision = 0
         self.events = []
@@ -43,6 +59,9 @@ class Table:
         if self.session and dealer == 0 and self.session.game.dealer == 3:
             wind_round = (wind_round + 1) % 4
         self.session = GameSession(seed=seed, dealer=dealer, wind_round=wind_round, check=True)
+        if load_danger_model() is not None:
+            # Your seat's engine reads the opponents with the learned danger model.
+            self.session.game.strategy = StrategyEngine(PLAYER1_WEIGHTS, opponent_model=OpponentAnalyzer())
         self.hint_cache = None
         self.events = ["A new hand begins. You are Player 1."]
         self.playback = []
@@ -75,6 +94,8 @@ class Table:
                 if len(decision.actions) != 1 or decision.actions[0].kind != "pass":
                     break
                 self.play(decision.actions[0])
+            elif self.brain is not None:
+                self.play(decide(self.brain, self.session.game, decision))
             else:
                 self.play(choose_action(self.session.game, decision))
 
@@ -98,10 +119,30 @@ class Table:
             raise ValueError("The table changed. Refresh the recommendation.")
         if s.is_over or s.current_player != 0 or s.decision.kind != "turn":
             return {"revision": self.revision, "recommendation": None}
-        if self.hint_cache is None:
+        if self.hint_cache is None and self.brain is not None:
+            found = self.brain.analyse(s.game, 0, simulations=HINT_SIMULATIONS)
+            best = found["candidates"][0]
+            if not best["visits"]:      # one obvious discard: only rate it
+                rating = rate_discards(s.game, 0, [best["tile"]], playouts=64, seed=self.revision,
+                                       parallel=False)[best["tile"]]
+                best = dict(best, win=rating["win"], visits=rating["playouts"])
+            self.hint_cache = {
+                "tile": found["tile"], "win_percent": best["win"], "samples": found["simulations"] or best["visits"],
+                "prior": best["prior"], "engine": found["engine"],
+                "candidates": [{"tile": c["tile"], "prior": c["prior"], "units": c["units"], "win": c["win"]}
+                               for c in found["candidates"]],
+            }
+        elif self.hint_cache is None:
             tile = engine_discard_decision(s.game, 0, s.game.strategy).details[0]["tile"]
             rating = rate_discards(s.game, 0, [tile], playouts=64, seed=self.revision, parallel=False)[tile]
             self.hint_cache = {"tile": tile, "win_percent": rating["win"], "samples": rating["playouts"]}
+        if "deal_in" not in self.hint_cache:
+            # The learned danger model's chance that each tile pays an opponent.
+            reader = OpponentAnalyzer().update_from_game(s.game, 0)
+            if reader.model is not None:
+                self.hint_cache["deal_in"] = reader.deal_in_chance(self.hint_cache["tile"])
+                for c in self.hint_cache.get("candidates", []):
+                    c["deal_in"] = reader.deal_in_chance(c["tile"])
         return {"revision": self.revision, "recommendation": self.hint_cache}
 
     def state(self):
@@ -126,6 +167,7 @@ class Table:
             "actions": [dict(asdict(a), id=i) for i, a in enumerate(session.legal_actions())],
             "events": self.events, "result": result,
             "last_discard": self.last_discard,
+            "brain": "alphago-search" if self.brain is not None else "engine",
             "winning_hand": ({
                 "player": result["winner"],
                 "hand": game.sort_tiles(game.hands[result["winner"]]),
@@ -189,9 +231,9 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(400, {"error": str(exc)})
 
 
-def create_server(port=8000):
+def create_server(port=8000, brain=None):
     server = HTTPServer(("127.0.0.1", port), Handler)
-    server.table = Table()
+    server.table = Table(brain)
     server.token = secrets.token_urlsafe(32)
     return server
 
@@ -199,9 +241,28 @@ def create_server(port=8000):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--engine-only", action="store_true",
+                        help="play the strategy engine alone, without the trained models")
     args = parser.parse_args()
-    with create_server(args.port) as server:
+    parser.add_argument("--model", help="trained network (default models/alpha_best.pt)")
+    parser.add_argument("--simulations", type=int, default=OPPONENT_SIMULATIONS,
+                        help="searched playouts behind each AI discard")
+    args = parser.parse_args()
+    brain = None
+    if not args.engine_only:
+        model = args.model or (DEFAULT_MODEL if AlphaSearch else None)
+        if AlphaSearch is None:
+            print("torch is not installed, so the trained network is off.", flush=True)
+        elif not Path(model).exists():
+            print(f"{model} not found: train it with python -m mantai_ml selfplay --out models/alpha.pt",
+                  flush=True)
+        else:
+            brain = AlphaSearch(model, simulations=args.simulations)
+    with create_server(args.port, brain) as server:
         print(f"Play Mahjong at http://127.0.0.1:{server.server_port} (Ctrl+C to stop)", flush=True)
+        print("Decisions: " + ("strategy engine only" if brain is None else
+              f"search ({args.simulations} playouts per AI discard, {HINT_SIMULATIONS} for yours) "
+              f"over {brain.model_path}"), flush=True)
         try:
             server.serve_forever()
         except KeyboardInterrupt:
