@@ -8,8 +8,11 @@ cd "C:\Users\Christabel\vscode files"
 ```
 
 Open **http://127.0.0.1:8000** and click **New hand**. Keep the terminal running.
-Click a tile in your hand once to discard it. The three AI opponents play
-automatically. When you can claim a tile, choose **CHI**, **PONG**, **KONG**,
+Click a tile in your hand once to discard it. The three opponents play
+automatically, like people would: each is the strategy engine with its own style
+(aggressive, balanced or cautious). Your recommended discard comes from the
+trained network and its search. To have that search play the opponents too,
+start the server with `--ai-opponents`. When you can claim a tile, choose **CHI**, **PONG**, **KONG**,
 **HU**, or **PASS**. Each Chi option lists the two tiles used from your hand.
 The end-of-hand display includes the backend's tai and payments.
 
@@ -33,7 +36,7 @@ as tile artwork via CSS sprite windows. The existing 148-tile set is preserved:
 no jokers, Fei tiles, or extra instrument/occupation bonus tiles are added.
 On narrow screens, scroll horizontally to see the entire table.
 
-This is one local single-player table against three AI players. Tabs share the
+This is one local single-player table against three computer players. Tabs share the
 same table. Refresh preserves the running hand; restarting the Python server
 resets it. Hands are not saved, and there is no online multiplayer. Dealer and round
 progression are kept while the server remains running.

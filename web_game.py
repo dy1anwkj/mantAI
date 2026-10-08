@@ -2,11 +2,13 @@
 
 Run: python web_game.py, then open http://127.0.0.1:8000.
 One shared table per server process; intended for local single-player use.
-By default Players 2-4 and your recommended discard are chosen the way
-AlphaGo chose moves (mantai_ml/search.py): the self-play network trained from
-the study library in docs/ proposes discards, and a search over guessed deals,
-scored by its value network and by rollouts, decides. --engine-only plays the
-strategy engine alone.
+Players 2-4 play like people: each is the strategy engine with its own style
+(aggressive, balanced or cautious), the stand-ins for the human players the
+project aims to beat. Your recommended discard is chosen the way AlphaGo chose
+moves (mantai_ml/search.py): the self-play network trained from the study
+library in docs/ proposes discards, and a search over guessed deals, scored by
+its value network and by rollouts, decides. --ai-opponents lets that search
+play Players 2-4 as well; --engine-only plays the strategy engine alone.
 """
 import argparse
 from copy import deepcopy
@@ -32,10 +34,12 @@ OPPONENT_SIMULATIONS = 64    # ... and behind each AI discard
 
 
 class Table:
-    def __init__(self, brain=None):
-        """brain: an AlphaSearch that plays Players 2-4 and recommends your
-        discard; None leaves both to the strategy engine."""
+    def __init__(self, brain=None, ai_opponents=False):
+        """brain: an AlphaSearch that recommends your discard; None leaves it to
+        the strategy engine. ai_opponents: the brain also plays Players 2-4
+        instead of the human-style engine opponents."""
         self.brain = brain
+        self.ai_opponents = ai_opponents and brain is not None
         self.session = None
         self.revision = 0
         self.events = []
@@ -94,7 +98,7 @@ class Table:
                 if len(decision.actions) != 1 or decision.actions[0].kind != "pass":
                     break
                 self.play(decision.actions[0])
-            elif self.brain is not None:
+            elif self.ai_opponents:
                 self.play(decide(self.brain, self.session.game, decision))
             else:
                 self.play(choose_action(self.session.game, decision))
@@ -168,6 +172,7 @@ class Table:
             "events": self.events, "result": result,
             "last_discard": self.last_discard,
             "brain": "alphago-search" if self.brain is not None else "engine",
+            "opponents": "alphago-search" if self.ai_opponents else "human-style",
             "winning_hand": ({
                 "player": result["winner"],
                 "hand": game.sort_tiles(game.hands[result["winner"]]),
@@ -231,9 +236,9 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(400, {"error": str(exc)})
 
 
-def create_server(port=8000, brain=None):
+def create_server(port=8000, brain=None, ai_opponents=False):
     server = HTTPServer(("127.0.0.1", port), Handler)
-    server.table = Table(brain)
+    server.table = Table(brain, ai_opponents)
     server.token = secrets.token_urlsafe(32)
     return server
 
@@ -243,7 +248,8 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--engine-only", action="store_true",
                         help="play the strategy engine alone, without the trained models")
-    args = parser.parse_args()
+    parser.add_argument("--ai-opponents", action="store_true",
+                        help="the trained search plays Players 2-4 instead of the human-style engine")
     parser.add_argument("--model", help="trained network (default models/alpha_best.pt)")
     parser.add_argument("--simulations", type=int, default=OPPONENT_SIMULATIONS,
                         help="searched playouts behind each AI discard")
@@ -258,11 +264,13 @@ if __name__ == "__main__":
                   flush=True)
         else:
             brain = AlphaSearch(model, simulations=args.simulations)
-    with create_server(args.port, brain) as server:
+    with create_server(args.port, brain, args.ai_opponents) as server:
         print(f"Play Mahjong at http://127.0.0.1:{server.server_port} (Ctrl+C to stop)", flush=True)
-        print("Decisions: " + ("strategy engine only" if brain is None else
-              f"search ({args.simulations} playouts per AI discard, {HINT_SIMULATIONS} for yours) "
-              f"over {brain.model_path}"), flush=True)
+        print("Opponents: " + (f"search ({args.simulations} playouts per discard)"
+                                if args.ai_opponents and brain is not None
+                                else "human-style engine (aggressive / balanced / cautious)"), flush=True)
+        print("Your recommendation: " + ("strategy engine" if brain is None else
+              f"search ({HINT_SIMULATIONS} playouts) over {brain.model_path}"), flush=True)
         try:
             server.serve_forever()
         except KeyboardInterrupt:

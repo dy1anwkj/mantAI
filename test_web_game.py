@@ -126,9 +126,10 @@ class TableTests(unittest.TestCase):
             critic = nn.Sequential(nn.Linear(STATE_SIZE, 8), nn.ReLU(), nn.Linear(8, 4), nn.ReLU(), nn.Linear(4, 1))
             torch.save(critic.state_dict(), os.path.join(folder, "alpha_critic.pt"))
             brain = AlphaSearch(path, simulations=8, batch=4, max_candidates=2, parallel=False, seed=1)
-        table = Table(brain)
+        table = Table(brain, ai_opponents=True)
         table.new(seed=7)
         self.assertEqual(table.state()["brain"], "alphago-search")
+        self.assertEqual(table.state()["opponents"], "alphago-search")
         with patch("web_game.HINT_SIMULATIONS", 8):
             hint = table.hint(table.revision)["recommendation"]
         legal = [a.tile for a in table.session.legal_actions() if a.kind == "discard"]
@@ -142,6 +143,19 @@ class TableTests(unittest.TestCase):
                          if a.kind in ("discard", "pass"))
             table.act(index, table.revision)
         self.assertTrue(table.session.is_over or table.session.current_player == 0)
+
+        # By default the search only recommends; Players 2-4 are the human-style engine.
+        table = Table(brain)
+        with patch("web_game.decide", side_effect=AssertionError("the search played an opponent")):
+            table.new(seed=7)
+            for _ in range(5):
+                if table.session.is_over:
+                    break
+                index = next(i for i, a in enumerate(table.session.legal_actions())
+                             if a.kind in ("discard", "pass"))
+                table.act(index, table.revision)
+        self.assertEqual(table.state()["opponents"], "human-style")
+        self.assertEqual(table.state()["brain"], "alphago-search")
 
     def test_bad_and_stale_actions_do_not_change_table(self):
         table = Table()
