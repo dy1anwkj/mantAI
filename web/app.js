@@ -5,7 +5,7 @@ const ACTION_PAUSE_MS = 1500;
 let recommendation = null, hintLoading = false, hintMessage = '';
 const playerWind = p => windNames[(state?.seats?.[p] || p+1)-1];
 async function loadHint(){
-  if(!state?.started || state.over || state.decision!=='turn')return;
+  if(!state?.started || state.over || !state.actions?.length)return;
   const revision=state.revision;
   hintLoading=true;renderHint();
   try{
@@ -17,10 +17,15 @@ async function loadHint(){
 }
 function renderHint(){
   const box=$('recommendation');box.replaceChildren();
-  document.querySelectorAll('#hand .recommended').forEach(node=>node.classList.remove('recommended'));
-  if(busy||!state?.started||state.over||state.decision!=='turn')return;
-  if(hintLoading){box.textContent='Calculating recommended discard and estimated win chance…';return;}
+  document.querySelectorAll('#hand .recommended, #actions .recommended').forEach(node=>node.classList.remove('recommended'));
+  if(busy||!state?.started||state.over||!state.actions?.length)return;
+  if(hintLoading){box.textContent=state.decision==='turn'?'Calculating recommended discard and estimated win chance…':'Calculating recommended claim…';return;}
   if(!recommendation){box.textContent=hintMessage;return;}
+  if(recommendation.action){
+    box.append(el('span',`Recommended: ${actionText(recommendation.action)}`));
+    document.querySelector(`#actions button[data-id="${recommendation.action.id}"]`)?.classList.add('recommended');
+    return;
+  }
   box.append(tile(recommendation.tile,true),el('span',`Recommended: ${label(recommendation.tile)} · Estimated hand win chance: ${recommendation.win_percent.toFixed(1)}%`));
   document.querySelectorAll('#hand .tile').forEach(node=>{if(node.classList.contains(`face-${recommendation.tile[0]}-${recommendation.tile[1]}`))node.classList.add('recommended');});
 }
@@ -114,7 +119,8 @@ function animateDiscard(player){
   const y=from.top+from.height/2-to.top-to.height/2;
   target.animate([{transform:`translate(${x}px,${y}px) rotate(-12deg)`,opacity:.6},{transform:'translate(0,0) rotate(0)',opacity:1}],{duration:550,easing:'cubic-bezier(.2,.7,.3,1)'});
 }
-function actionButton(text,id){const b=el('button',text);b.disabled=busy;b.onclick=()=>update('/api/action',{id,revision:state.revision});return b;}
+function actionText(a){let text=a.kind.toUpperCase();if(a.tile)text+=` · ${label(a.tile)}`;if(a.chi)text+=` with ${a.chi.map(label).join(' + ')}`;return text;}
+function actionButton(text,id){const b=el('button',text);b.dataset.id=id;b.disabled=busy;b.onclick=()=>update('/api/action',{id,revision:state.revision});return b;}
 function render(){
   $('new').disabled=busy;$('new').textContent=busy?'Playing…':'New hand';
   if(!state?.started){
@@ -153,8 +159,7 @@ function render(){
   if(busy)$('instruction').textContent='Watch the table — actions pause for 1.5 seconds.';
   $('own-public').replaceChildren(publicTiles(0));$('actions').replaceChildren();
   for(const a of state.actions.filter(a=>a.kind!=='discard')){
-    let text=a.kind.toUpperCase();if(a.tile)text+=` · ${label(a.tile)}`;if(a.chi)text+=` with ${a.chi.map(label).join(' + ')}`;
-    $('actions').append(actionButton(text,a.id));
+    $('actions').append(actionButton(actionText(a),a.id));
   }
   $('winner-panel').replaceChildren();$('winner-panel').hidden=!state.winning_hand;
   if(state.winning_hand){

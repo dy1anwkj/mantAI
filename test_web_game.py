@@ -4,6 +4,7 @@ import os
 import tempfile
 import threading
 import unittest
+from dataclasses import asdict
 from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -43,6 +44,32 @@ class TableTests(unittest.TestCase):
                 table.hint(table.revision - 1)
         table.new(seed=3)
         self.assertIsNone(table.hint_cache)
+
+    def test_claims_and_wins_are_recommended(self):
+        table = Table()
+        claims = 0
+        with patch('web_game.rate_discards', return_value=None):
+            for seed in range(40):
+                table.new(seed=seed)
+                while not table.session.is_over:
+                    actions = table.session.legal_actions()
+                    kinds = [a.kind for a in actions]
+                    if table.session.decision.kind != "turn" or "hu" in kinds or "kong" in kinds:
+                        hint = table.hint(table.revision)["recommendation"]
+                        if table.session.decision.kind != "turn":
+                            claims += 1
+                            self.assertIn("action", hint)
+                        if "hu" in kinds:
+                            self.assertEqual(hint["action"]["kind"], "hu")
+                        if "action" in hint:
+                            chosen = actions[hint["action"]["id"]]
+                            self.assertEqual(hint["action"], dict(asdict(chosen), id=hint["action"]["id"]))
+                            table.act(hint["action"]["id"], table.revision)
+                            continue
+                    table.act(kinds.index("discard"), table.revision)
+                if claims >= 10:
+                    break
+        self.assertGreaterEqual(claims, 10)
 
     def test_discard_playback_is_ordered_and_snapshots_are_independent(self):
         table = Table()
