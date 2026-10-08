@@ -15,22 +15,13 @@ async function loadHint(){
   }catch(error){if(state.revision===revision)hintMessage='Recommendation unavailable. You can still play.';}
   finally{if(state.revision===revision&&!busy){hintLoading=false;renderHint();}}
 }
-function searchNote(r){
-  if(!r.candidates?.length)return r.deal_in!=null?` Deal-in risk ${(100*r.deal_in).toFixed(1)}%.`:'';
-  const others=r.candidates.filter(c=>!same(c.tile,r.tile)&&c.units!==null).slice(0,2)
-    .map(c=>`${label(c.tile)} ${c.units>=0?'+':''}${c.units.toFixed(1)}`);
-  const mine=r.candidates.find(c=>same(c.tile,r.tile));
-  const risk=r.deal_in!=null?` Deal-in risk ${(100*r.deal_in).toFixed(1)}%.`:'';
-  return risk+` Network prior ${(100*r.prior).toFixed(0)}%`+(mine?.units!=null?`, search ${mine.units>=0?'+':''}${mine.units.toFixed(1)} units`:'')+
-    (others.length?`; also searched ${others.join(', ')}`:'')+'.';
-}
 function renderHint(){
   const box=$('recommendation');box.replaceChildren();
   document.querySelectorAll('#hand .recommended').forEach(node=>node.classList.remove('recommended'));
   if(busy||!state?.started||state.over||state.decision!=='turn')return;
   if(hintLoading){box.textContent='Calculating recommended discard and estimated win chance…';return;}
   if(!recommendation){box.textContent=hintMessage;return;}
-  box.append(tile(recommendation.tile,true),el('span',`Recommended: ${label(recommendation.tile)} · Estimated hand win chance: ${recommendation.win_percent.toFixed(1)}% after discarding (${recommendation.samples} simulations; approximate).${searchNote(recommendation)}`));
+  box.append(tile(recommendation.tile,true),el('span',`Recommended: ${label(recommendation.tile)} · Estimated hand win chance: ${recommendation.win_percent.toFixed(1)}%`));
   document.querySelectorAll('#hand .tile').forEach(node=>{if(node.classList.contains(`face-${recommendation.tile[0]}-${recommendation.tile[1]}`))node.classList.add('recommended');});
 }
 const names = {east:'東',south:'南',west:'西',north:'北',red:'中',green:'發',white:'白'};

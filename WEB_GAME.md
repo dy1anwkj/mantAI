@@ -60,8 +60,9 @@ Decisions are made the way AlphaGo made them (`mantai_ml/search.py`):
    Each playout is scored by the value network and by the units actually won.
    The network's favourite is played unless another tile clearly did better.
 
-Your recommendation searches 160 playouts; each AI discard 64. The
-recommendation names the network's confidence and the other tiles it searched.
+Your recommendation searches 160 playouts (with `--ai-opponents`, each AI
+discard searches 64). The box shows only the recommended tile and the estimated
+hand win chance.
 `web_game.py --engine-only` plays against the strategy engine alone; without
 torch or a trained network the game says so and does the same.
 
