@@ -1,10 +1,9 @@
 # Play Mahjong in your browser
 
-From PowerShell:
+From the project folder, after installing the requirements (see [README.md](README.md)):
 
-```powershell
-cd "C:\Users\Christabel\vscode files"
-.\venv\Scripts\python.exe .\web_game.py
+```bash
+python web_game.py
 ```
 
 Open **http://127.0.0.1:8000** and click **New hand**. Keep the terminal running.
@@ -43,8 +42,8 @@ progression are kept while the server remains running.
 
 Validation:
 
-```powershell
-.\venv\Scripts\python.exe -B -m unittest test_web_game -v
+```bash
+python -m pytest test_web_game.py -v
 ```
 
 Decisions are made the way AlphaGo made them (`mantai_ml/search.py`):

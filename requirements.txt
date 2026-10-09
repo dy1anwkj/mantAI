@@ -1,0 +1,13 @@
+# Needed to play (Python 3.9 or newer)
+numpy>=1.24
+
+# The trained network and search behind the recommendations.
+# Without it the game still runs, with the strategy engine making the recommendations.
+torch>=2.0
+
+# Running the tests
+pytest
+
+# Optional: reading tiles from recorded games (python -m mantai_ml crops / video)
+# opencv-python
+# pillow
