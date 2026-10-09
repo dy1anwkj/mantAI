@@ -54,4 +54,9 @@ def read_records(paths):
                 r["melds"] = [[to_tile(t) for t in m] for m in r.get("melds", [])]
                 r["visible"] = [to_tile(t) for t in r.get("visible", [])]
                 r["bonus"] = [to_tile(t) for t in r.get("bonus", [])]
+                if r.get("opponents") is not None:
+                    r["opponents"] = [dict(opp,
+                        discards=[to_tile(t) for t in opp["discards"]],
+                        melds=[[to_tile(t) for t in meld] for meld in opp["melds"]])
+                        for opp in r["opponents"]]
                 yield r

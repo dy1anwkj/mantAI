@@ -37,7 +37,10 @@ On narrow screens, scroll horizontally to see the entire table.
 
 This is one local single-player table against three computer players. Tabs share the
 same table. Refresh preserves the running hand; restarting the Python server
-resets it. Each hand you play is saved to `data/web_hands/` (not committed) when it ends, or when you deal a new one after moving: the seed and starting hands, every move, and for each of your moves your tiles, what the box recommended and what you chose. Start with `--no-save` to turn this off. There is no online multiplayer. Dealer and round
+resets it. Start with `--save-hands` to record hands in `data/web_hands/`
+(not committed) when they end, or when you deal a new one after moving. Records
+include the seed, starting hands, physical wall setup, moves, recommendations,
+and your choices. Saving is off by default. There is no online multiplayer. Dealer and round
 progression are kept while the server remains running.
 
 Validation:

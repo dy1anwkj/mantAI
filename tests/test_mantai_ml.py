@@ -51,6 +51,7 @@ def test_recorded_gameplay_is_complete_and_encodable(sim_records):
     assert {r["kind"] for r in records} == {"discard", "call"}
     for r in records[:300]:
         assert r["player"] == 0 and r["controller"] == "engine"
+        assert len(r["opponents"]) == 3
         assert "outcome" in r
         x = encode_record(r)
         assert x.shape == (STATE_SIZE,)
@@ -202,12 +203,16 @@ def test_selfplay_saves_a_model_evaluate_can_play(tmp_path):
     selfplay(str(out), iterations=2, games_per_iter=8, hidden=32, workers=2,
              eval_every=2, eval_games=4, log=lambda *_: None)
     assert out.exists() and (tmp_path / "sp_best.pt").exists() and (tmp_path / "sp_critic.pt").exists()
+    assert (tmp_path / "sp_best_critic.pt").exists()
     # check=True inside simulate asserts tile conservation, hand sizes and legal wins
     stats = evaluate_policy(str(out), 10, seed=1, progress=False)
     assert stats["errors"] == []
     # Continuing from the saved model picks up its critic too.
     selfplay(str(out), iterations=1, games_per_iter=4, init=str(out), start_iter=3,
-             workers=1, eval_every=1, eval_games=2, log=lambda *_: None)
+             workers=1, eval_every=1, eval_games=2, log=lambda *_: None,
+             opponent_models=[str(out)], engine_calls=True)
+    from mantai_ml.model import load_model
+    assert load_model(str(out))[0].engine_calls
 
 
 def test_rules_prior_prefers_discards_closer_to_a_win(tmp_path):
@@ -363,3 +368,108 @@ def test_search_keeps_the_favourite_unless_another_tile_clearly_wins(tmp_path):
     assert search._decide([a, b], priors, noisy) == a
     clear = {a: {"scores": [0, -1, 1, 0, 0, -1, 1, 0]}, b: {"scores": [5, 4, 6, 5, 5, 4, 6, 5]}}
     assert search._decide([a, b], priors, clear) == b
+
+
+def test_training_split_keeps_calls_and_discards_of_each_game_together():
+    from mantai_ml.train import _split_decisions
+    discards = {"A": ["A"], "B": ["B"], "C": ["C"]}
+    calls = {"A": ["A"], "C": ["C"], "D": ["D"]}
+    dt, dv, ct, cv = _split_decisions(discards, calls, 0.5, random.Random(0))
+    assert not (set(dt + ct) & set(dv + cv))
+    assert sorted(dt + dv) == ["A", "B", "C"]
+    assert sorted(ct + cv) == ["A", "C", "D"]
+    assert dv and cv
+
+
+@pytest.mark.parametrize("budget", [1, 3, 8, 17, 64])
+def test_search_respects_budget_and_compares_same_deals(tmp_path, monkeypatch, budget):
+    from mantai_ml.search import AlphaSearch
+    search = AlphaSearch(_tiny_model(tmp_path), parallel=False, seed=1)
+    tiles = [('dot', n) for n in (1, 2, 3)]
+    monkeypatch.setattr(search, "priors", lambda *args: dict(zip(tiles, [0.6, 0.3, 0.1])))
+    monkeypatch.setattr(search, "candidates", lambda *args: (tiles, tiles[-1]))
+    deals = {t: [] for t in tiles}
+    def run(snap, jobs):
+        for tile, seeds in jobs:
+            deals[tile].extend(seeds)
+        return [[(0.0, 0.0, False) for _ in seeds] for tile, seeds in jobs]
+    monkeypatch.setattr(search, "_run", run)
+    result = search.analyse(sim.GameSession(seed=7).game, 0, simulations=budget)
+    assert result["simulations"] == budget
+    for a in tiles:
+        for b in tiles:
+            n = min(len(deals[a]), len(deals[b]))
+            assert deals[a][:n] == deals[b][:n]
+
+
+def test_parallel_search_preserves_deal_order(monkeypatch):
+    from concurrent.futures import Future
+    from mantai_ml.search import AlphaSearch
+    class Pool:
+        def submit(self, fn, snap, tile, seeds, critic, mix):
+            result = Future()
+            result.set_result([(seed, 0, False) for seed in seeds])
+            return result
+    monkeypatch.setattr(sim, "_playout_pool", lambda: Pool())
+    search = object.__new__(AlphaSearch)
+    search.parallel, search.critic, search.mix = True, None, 0.5
+    seeds = list(range(7))
+    assert [r[0] for r in search._run({}, [(('dot', 1), seeds)])[0]] == seeds
+
+
+def test_fine_tuning_preserves_existing_architecture(sim_records, tmp_path):
+    from mantai_ml.model import PolicyNet, save_model, load_model
+    from mantai_ml.train import train
+    initial, output = tmp_path / "initial.pt", tmp_path / "tuned.pt"
+    save_model(initial, PolicyNet(hidden=32, prior=1.0))
+    metrics = train([sim_records], str(output), init=str(initial), epochs=1,
+                    device="cpu", log=lambda *_: None)
+    model, _ = load_model(output)
+    assert model.hidden == 32 and model.prior == 1.0
+    assert 0 <= metrics["discard_acc"] <= 1
+
+
+def test_single_decision_ppo_update_stays_finite():
+    from mantai_ml.model import PolicyNet
+    from mantai_ml.features import STATE_SIZE
+    from mantai_ml.selfplay import _ppo_update
+    net = PolicyNet(hidden=16, dropout=0)
+    critic = torch.nn.Linear(STATE_SIZE, 1)
+    optimizer = torch.optim.Adam(list(net.parameters()) + list(critic.parameters()))
+    x = torch.zeros(1, STATE_SIZE)
+    mask = torch.zeros(1, 34)
+    mask[0, :2] = 1
+    entropy = _ppo_update(net, critic, optimizer, x, mask, torch.tensor([0]),
+                          torch.tensor([1.0]), None, None, None, 0.01, 0.5, epochs=1)
+    assert np.isfinite(entropy)
+    assert all(torch.isfinite(p).all() for p in list(net.parameters()) + list(critic.parameters()))
+
+
+def test_search_can_guard_the_engine_choice(tmp_path):
+    from mantai_ml.search import AlphaSearch
+    search = AlphaSearch(_tiny_model(tmp_path), batch=4, parallel=False, reference="engine")
+    a, b = ('dot', 1), ('dot', 2)
+    priors = {a: 0.8, b: 0.2}
+    stats = {a: {"scores": [0] * 8}, b: {"scores": [0] * 8}}
+    assert search._decide([a, b], priors, stats, reference=b) == b
+    stats[a]["scores"] = [5] * 8
+    assert search._decide([a, b], priors, stats, reference=b) == a
+
+
+def test_engine_call_mode_survives_save_and_numpy_conversion(tmp_path, monkeypatch):
+    from mantai_ml.model import PolicyNet, save_model, load_model
+    from mantai_ml.ml_player import MLPolicy
+    from mantai_ml.selfplay import SamplingPolicy, _numpy_weights
+    import Decision_Strategy_engine as de
+    net = PolicyNet(hidden=16)
+    net.engine_calls = True
+    path = tmp_path / "hybrid.pt"
+    save_model(path, net)
+    restored, _ = load_model(path)
+    assert restored.engine_calls
+    game = sim.GameSession(seed=7).game
+    monkeypatch.setattr(de, "engine_should_call", lambda *args: True)
+    assert MLPolicy(path).should_call(game, 0, ('dot', 1), 'pong')
+    policy = SamplingPolicy(_numpy_weights(restored), random.Random(0))
+    assert policy.should_call(game, 0, ('dot', 1), 'pong')
+    assert not policy.calls

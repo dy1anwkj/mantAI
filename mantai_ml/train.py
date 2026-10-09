@@ -15,7 +15,7 @@ import torch
 import torch.nn.functional as F
 
 from .features import encode_call_record, encode_record, legal_mask, CALL_TYPES
-from .model import PolicyNet, pick_device, save_model
+from .model import PolicyNet, load_model, pick_device, save_model
 from .records import read_records
 from .tiles import TILE_INDEX
 
@@ -53,22 +53,33 @@ def _tensors(rows, device):
     return [torch.tensor(np.array(c), dtype=torch.float32, device=device) for c in cols]
 
 
+def _split_decisions(discards, calls, val_fraction, rng):
+    """Keep every decision from a game on the same side of the split."""
+    ids = sorted(set(discards) | set(calls))
+    rng.shuffle(ids)
+    n_val = max(1, int(len(ids) * val_fraction)) if len(ids) > 1 else 0
+    validation = set(ids[:n_val])
+    def partition(groups):
+        return ([row for gid, rows in groups.items() if gid not in validation for row in rows],
+                [row for gid, rows in groups.items() if gid in validation for row in rows])
+    return (*partition(discards), *partition(calls))
+
+
 def train(paths, out_path, epochs=15, batch_size=256, lr=1e-3, hidden=256,
           controllers=None, winners_only=False, win_weight=2.0,
-          val_fraction=0.1, seed=0, device=None, log=print):
+          val_fraction=0.1, seed=0, device=None, log=print, init=None):
     rng = random.Random(seed)
     torch.manual_seed(seed)
     device = pick_device(device)
 
     discards, calls = load_dataset(paths, controllers, winners_only, win_weight)
-    d_train, d_val = _split(discards, val_fraction, rng)
-    c_train, c_val = _split(calls, val_fraction, rng)
+    d_train, d_val, c_train, c_val = _split_decisions(discards, calls, val_fraction, rng)
     if not d_train:
         raise ValueError("No discard records to train on. Check the file and filters.")
     log(f"Training on {len(d_train)} discards / {len(c_train)} calls, "
         f"validating on {len(d_val)} / {len(c_val)} (device: {device})")
 
-    net = PolicyNet(hidden=hidden).to(device)
+    net = load_model(init, device)[0] if init else PolicyNet(hidden=hidden).to(device)
     opt = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-4)
 
     Xd, Md, Yd, Wd = _tensors(d_train, device)
@@ -92,6 +103,7 @@ def train(paths, out_path, epochs=15, batch_size=256, lr=1e-3, hidden=256,
                     net.call_logit(Xc[cidx]), Yc[cidx], reduction="none") * Wc[cidx]).mean()
             opt.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
             opt.step()
             total += loss.item() * len(idx)
         metrics = evaluate_accuracy(net, d_val, c_val, device)

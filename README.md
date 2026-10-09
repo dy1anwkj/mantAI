@@ -7,6 +7,10 @@ discard and claim recommendations. A learned policy, statistical hand analysis,
 decision engines, and search over possible hidden deals support its decisions.
 Performance against real humans has not yet been measured.
 
+The included default now uses the improved learned discard policy with
+strategy-engine calls and its matching value model. It was trained with
+engine examples and reinforcement learning against varied opponents.
+
 ![An earlier mantAI table showing discard recommendations and search scores](docs/screenshot.jpg)
 
 ## Quick start
@@ -45,8 +49,8 @@ game still runs, with the strategy engine making the recommendations.
   a simulated win percentage.
 - **Human-style opponents:** each opponent plays its own style, aggressive,
   balanced or cautious, as stand-ins for the human players mantAI is meant to beat.
-- **Saved hands for review:** each hand is saved to `data/web_hands/` with every
-  move, what was recommended and what you chose. `--no-save` turns this off.
+- **Optional hand review:** start with `--save-hands` to save hands to
+  `data/web_hands/`, including moves, recommendations, and your choices.
 - **Options:** adjust action pacing and enable or disable recommendations.
 
 This is a local single-player table; there is no online multiplayer. Browser
@@ -83,26 +87,29 @@ is a noisy estimate from simulations; the search compares expected points.
 
 ## Results
 
-Against the human-style opponents, playing every move by the recommendation
-(Player 1's points per hand; 0 is break-even and a fair share of wins is 25%):
+The latest comparison used **5,000 identical starting deals per policy** against
+human-style engine opponents, with rule checks enabled. These are policy results
+**without search**; one scoring unit equals one point.
 
-| Player 1 plays as | Hands | Win rate | Points per hand |
-|---|---|---|---|
-| Network + search (the recommendation) | 200 | 26% | **+1.30** |
-| Trained network alone | 2,000 | 26% | +0.27 |
-| Hand-tuned strategy engine | 2,000 | 33% | +0.99 |
-| Engine, on the same 200 deals as the search | 200 | 35% | +1.47 |
+| Player 1 plays as | Win rate | Points per hand | Deal-in rate |
+|---|---:|---:|---:|
+| Previous browser default | 24.92% | +0.3354 | 17.66% |
+| Improved learned policy with learned calls | 27.86% | +0.7848 | 14.58% |
+| **New default: learned discards with engine calls** | **29.62%** | **+0.8832** | **14.68%** |
+| Hand-tuned strategy engine | 32.44% | +1.2756 | 14.22% |
 
-- These recorded runs show positive average points for both the network and
-  search. They use different sample sizes and do not establish a statistically
-  significant improvement from search.
-- The hand-tuned engine is still slightly ahead. Closing that gap through more
-  self-play is the next step.
-- Chi, Pong and Kong recommendations come from the engine: with the engine
-  discarding, engine calls scored +1.40 a hand against +0.79 for the network's
-  calls over 4,000 deals.
-- These results are against simulated opponents. mantAI has not yet been
-  measured against human players.
+- The new default gained **+0.5478 points per hand** over the previous default.
+  The approximate paired 95% confidence interval was **[+0.2058, +0.8898]**.
+- Training used decisions from 3,000 engine-played games, followed by 5,000
+  reinforcement-learning games. Most of the observed gain came from the
+  supervised stage; reinforcement learning did not clearly outperform it.
+- The strategy engine remains stronger. The new model with search and its
+  performance against real humans still need evaluation.
+
+Details and limitations: [training improvements](docs/TRAINING_IMPROVEMENTS.md).
+The [evaluation summary](docs/evaluation_summary.json) records the published
+metrics and seed. Earlier search results relate to older checkpoints and should
+not be treated as measurements of the new default.
 
 ## Rules
 
@@ -123,15 +130,17 @@ SPGG Mahjong Rules 2024 decides. Rules and scoring:
 | [D_hand_eval.py](D_hand_eval.py) | Hand evaluation: winning shapes, waits, tile efficiency |
 | [R_opponent_analysis.py](R_opponent_analysis.py) | Learned danger model: how likely a tile is to let an opponent win |
 | [mantai_ml/](mantai_ml) | Policy and value networks, self-play training and the search |
-| [models/](models) | Trained models: `alpha_best.pt`, `alpha_critic.pt`, `danger.npz` |
+| [models/](models) | Default policy `alpha_best.pt`, matching `alpha_best_critic.pt`, legacy critic, and `danger.npz` |
 | [tests/](tests) | Tests (`python -m pytest`) |
-| [tools/](tools) | `tune_engine.py`: tunes the strategy engine's weights by simulation |
+| [tools/](tools) | Engine tuning and `evaluate_models.py` for identical-deal policy comparisons |
 | [docs/](docs) | The web game guide and the rule and strategy books the network started from |
 
 ## Training
 
-The current command trains the learned player against three strategy-engine
-opponents. Training all four seats with learned policies is a future step.
+By default the command trains the learned player against three strategy-engine
+opponents. `--opponent-models` mixes frozen learned policies and the current
+policy with engine opponents; only Player 1's policy is updated. `--engine-calls`
+keeps claims under the strategy engine while learning discards.
 `--games` is the number of games **per iteration**; total training games are
 `--iterations × --games`. Evaluation games are additional.
 
@@ -153,6 +162,22 @@ python web_game.py --model models/continued.pt
 ```
 
 `python -m mantai_ml --help` lists every command.
+
+For identical-deal comparisons with rule checks and approximate confidence
+intervals:
+
+```bash
+python tools/evaluate_models.py --models models/alpha_best.pt --games 5000 --seed 20261014000 --out data/model_comparison.json
+```
+
+The included checkpoint is compared with the strategy engine. Add another model
+path to compare policies; the first model is the baseline. Experiment checkpoints
+and raw training data are gitignored and are not required to play.
+
+`--search-reference engine` lets the browser's search keep the strategy engine's
+discard unless a challenger scores clearly better on paired simulations. The
+default reference remains the network. See [training improvements](docs/TRAINING_IMPROVEMENTS.md)
+for the new training workflow and evaluation details.
 
 ## Tests
 

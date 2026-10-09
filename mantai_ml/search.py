@@ -103,7 +103,10 @@ class AlphaSearch:
     """A player for any seat. simulations: total playouts per discard."""
 
     def __init__(self, model_path=DEFAULT_MODEL, simulations=96, c_puct=1.5, mix=0.5,
-                 max_candidates=5, coverage=0.95, batch=8, confidence=1.5, parallel=True, seed=None):
+                 max_candidates=5, coverage=0.95, batch=8, confidence=1.5, parallel=True, seed=None,
+                 reference="network"):
+        if reference not in ("network", "engine"):
+            raise ValueError("reference must be network or engine")
         self.policy = MLPolicy(model_path)
         self.model_path = model_path
         self.critic = _load_critic(critic_path(model_path))
@@ -117,6 +120,7 @@ class AlphaSearch:
         self.parallel = parallel
         self.rand = random.Random(seed)
         self.last = None            # the analysis behind the last discard
+        self.reference = reference
 
     # ---- the policy network's opinion --------------------------------------
     def priors(self, game, player):
@@ -152,8 +156,11 @@ class AlphaSearch:
             try:
                 import mahjong_simulator as sim
                 pool = sim._playout_pool()
-                futures = [[pool.submit(_simulate, snap, tile, seeds[i::2], self.critic, self.mix)
-                            for i in range(min(2, len(seeds)))] for tile, seeds in jobs]
+                # Contiguous chunks preserve deal order, including when a
+                # partial final batch or a sequential fallback is needed.
+                futures = [[pool.submit(_simulate, snap, tile, chunk, self.critic, self.mix)
+                            for chunk in (seeds[:(len(seeds) + 1) // 2], seeds[(len(seeds) + 1) // 2:])
+                            if chunk] for tile, seeds in jobs]
                 return [[r for f in fs for r in f.result()] for fs in futures]
             except Exception:
                 pass        # no worker processes here: run them in this one
@@ -163,15 +170,22 @@ class AlphaSearch:
         """Search the discard. Returns {"tile", "candidates": [{tile, prior,
         visits, value, units, win} ...] best first, "simulations", "engine"}."""
         import mahjong_simulator as sim
-        budget = simulations or self.simulations
+        budget = self.simulations if simulations is None else simulations
+        if type(budget) is not int or budget < 1:
+            raise ValueError("simulations must be a positive integer")
+        if type(self.batch) is not int or self.batch < 1:
+            raise ValueError("batch must be a positive integer")
         priors = self.priors(game, player)
         tiles, engine_pick = self.candidates(game, player, priors)
+        reference = engine_pick if self.reference == "engine" else max(tiles, key=priors.get)
         stats = {t: {"scores": [], "units": [], "wins": 0} for t in tiles}
         if len(tiles) > 1:
             snap = sim._table_snapshot(game, player)
             worlds = [self.rand.random() for _ in range(budget)]
             # Every candidate first gets one batch on the same deals.
-            jobs = [(t, worlds[:self.batch]) for t in tiles]
+            initial = min(self.batch, budget // len(tiles))
+            jobs = [(t, worlds[:initial]) for t in tiles] if initial else [
+                (t, worlds[:1]) for t in sorted(tiles, key=priors.get, reverse=True)[:budget]]
             spent = 0
             while jobs:
                 for (tile, _), results in zip(jobs, self._run(snap, jobs)):
@@ -188,14 +202,23 @@ class AlphaSearch:
 
                 def puct(t):
                     n = len(stats[t]["scores"])
+                    if not n:
+                        return float("inf")
                     q = sum(stats[t]["scores"]) / n / scale
                     return q + self.c_puct * priors[t] * math.sqrt(total) / (1 + n)
-                ahead = sorted(tiles, key=puct, reverse=True)[:2]
+                # Always fund the reference and its strongest challenger,
+                # so confidence comparisons have paired samples to use.
+                ahead = [reference, max((t for t in tiles if t != reference), key=puct)]
                 jobs = []
+                remaining = budget - spent
                 for t in ahead:
                     n = len(stats[t]["scores"])
-                    seeds = worlds[n:n + self.batch] if n < len(worlds) else [self.rand.random() for _ in range(self.batch)]
+                    count = min(self.batch, remaining)
+                    if not count:
+                        break
+                    seeds = worlds[n:n + count]
                     jobs.append((t, seeds))
+                    remaining -= len(seeds)
         rows = []
         for t in tiles:
             n = len(stats[t]["scores"])
@@ -203,20 +226,20 @@ class AlphaSearch:
                          "value": sum(stats[t]["scores"]) / n if n else None,
                          "units": sum(stats[t]["units"]) / n if n else None,
                          "win": 100.0 * stats[t]["wins"] / n if n else None})
-        pick = self._decide(tiles, priors, stats)
+        pick = self._decide(tiles, priors, stats, reference=reference)
         rows.sort(key=lambda r: (r["tile"] == pick, r["value"] if r["value"] is not None else -1e9,
                                  r["prior"]), reverse=True)
         self.last = {"tile": pick, "candidates": rows, "engine": engine_pick,
-                     "simulations": sum(r["visits"] for r in rows)}
+                     "simulations": sum(r["visits"] for r in rows), "reference": reference}
         return self.last
 
-    def _decide(self, tiles, priors, stats):
+    def _decide(self, tiles, priors, stats, reference=None):
         """The network's favourite stands unless another candidate scored more
         on the same guessed deals by more than `confidence` standard errors.
         With thousands of simulations AlphaGo could simply play the most
         visited move; with a few dozen per tile the luck of the deals is too
         loud for that."""
-        favourite = max(tiles, key=priors.get)
+        favourite = reference if reference is not None else max(tiles, key=priors.get)
         base = stats[favourite]["scores"]
         best, best_margin = favourite, 0.0
         for t in tiles:
@@ -277,11 +300,12 @@ def decide(policy, game, decision):
     return Action("pass")
 
 
-def evaluate_search(model_path, n_games=200, simulations=64, seed=None, progress=True):
+def evaluate_search(model_path, n_games=200, simulations=64, seed=None, progress=True,
+                    reference="network"):
     """Play n_games with the search as Player 1; returns simulator stats."""
     import mahjong_simulator as sim
 
-    player = AlphaSearch(model_path, simulations=simulations, seed=seed)
+    player = AlphaSearch(model_path, simulations=simulations, seed=seed, reference=reference)
 
     def setup(game):
         game.ml_policy = player

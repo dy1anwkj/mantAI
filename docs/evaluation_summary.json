@@ -1,0 +1,91 @@
+{
+  "evaluation_seed": 20261014000,
+  "hands_per_policy": 5000,
+  "search_enabled": false,
+  "opponents": "human-style strategy engines",
+  "previous_default": {
+    "games": 5000,
+    "errors": 0,
+    "points_per_game": {
+      "mean": 0.3354,
+      "approximate_95_percent_ci": [
+        0.0587345869584282,
+        0.6120654130415717
+      ]
+    },
+    "win_percent": 24.92,
+    "deal_in_percent": 17.66
+  },
+  "candidates": {
+    "alpha.pt": {
+      "games": 5000,
+      "errors": 0,
+      "points_per_game": {
+        "mean": 0.118,
+        "approximate_95_percent_ci": [
+          -0.1696046160605839,
+          0.4056046160605839
+        ]
+      },
+      "win_percent": 20.96,
+      "deal_in_percent": 17.72
+    },
+    "improved_rl_best.pt": {
+      "games": 5000,
+      "errors": 0,
+      "points_per_game": {
+        "mean": 0.7848,
+        "approximate_95_percent_ci": [
+          0.4955721771882158,
+          1.0740278228117843
+        ]
+      },
+      "win_percent": 27.86,
+      "deal_in_percent": 14.58
+    },
+    "improved_hybrid.pt": {
+      "games": 5000,
+      "errors": 0,
+      "points_per_game": {
+        "mean": 0.8832,
+        "approximate_95_percent_ci": [
+          0.5983474886176858,
+          1.1680525113823141
+        ]
+      },
+      "win_percent": 29.62,
+      "deal_in_percent": 14.68
+    },
+    "engine": {
+      "games": 5000,
+      "errors": 0,
+      "points_per_game": {
+        "mean": 1.2756,
+        "approximate_95_percent_ci": [
+          0.9861815274515893,
+          1.5650184725484109
+        ]
+      },
+      "win_percent": 32.44,
+      "deal_in_percent": 14.22
+    }
+  },
+  "selected": "improved_hybrid.pt (published as alpha_best.pt)",
+  "paired_improvement_over_previous_default": {
+    "mean": 0.5478,
+    "approximate_95_percent_ci": [
+      0.20577897159896008,
+      0.8898210284010398
+    ]
+  },
+  "training": {
+    "engine_teacher_games": 3000,
+    "supervised_epochs": 15,
+    "reinforcement_learning_games": 5000
+  },
+  "limitations": [
+    "Simulated opponents only",
+    "New checkpoint with search not evaluated",
+    "Confidence intervals are approximate"
+  ]
+}

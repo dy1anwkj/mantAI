@@ -71,7 +71,8 @@ class SamplingPolicy:
     choice with the units Player 1 had been paid before it."""
 
     def __init__(self, weights, rand, greedy=False):
-        self.discard_layers, self.call_layers, self.prior = weights
+        self.discard_layers, self.call_layers, self.prior = weights[:3]
+        self.engine_calls = weights[3] if len(weights) > 3 else False
         self.rand = rand
         self.greedy = greedy
         self.discards = []      # (state, mask, action, instant before, progress after, best progress)
@@ -99,6 +100,10 @@ class SamplingPolicy:
         return PLAY_TILES[a]
 
     def should_call(self, game, player, tile, call_type):
+        if self.engine_calls:
+            from Decision_Strategy_engine import engine_should_call
+            engine = game.strategy if player == 0 else game.opponent_engines[player]
+            return engine_should_call(game, player, tile, call_type, engine)
         s = state_from_game(game, player)
         x = encode_state(**s)
         own = [t for m in s["melds"] for t in m]
@@ -117,14 +122,15 @@ class SamplingPolicy:
         # The model decides whether to Chi; the run kept is the one that
         # leaves the hand closest to ready.
         from Decision_Strategy_engine import engine_chi_sequence
-        seq = engine_chi_sequence(game, player, tile, game.strategy)
+        engine = game.strategy if player == 0 else game.opponent_engines[player]
+        seq = engine_chi_sequence(game, player, tile, engine)
         if seq is None:
             options = game.chi_options(player, tile)
             seq = options[0] if options else None
         return seq
 
 
-def play_games(weights, seeds, greedy=False):
+def play_games(weights, seeds, greedy=False, opponent_weights=None):
     """Play one game per seed with Player 1 sampling from `weights`.
     Returns (discard rows, call rows, game summaries). Each row carries the
     units Player 1 won from that decision to the end of the game, and its
@@ -139,9 +145,20 @@ def play_games(weights, seeds, greedy=False):
         policy = SamplingPolicy(weights, rand, greedy)
         g.ml_policy = policy
         g.deal()
-        session = sim.GameSession(game=g)
+        seat_policies = {}
+        if opponent_weights:
+            from .search import decide
+            opponent_rand = random.Random(seed ^ 0x5E1F)
+            for player in (1, 2, 3):
+                if opponent_rand.random() < 0.5:
+                    seat_policies[player] = SamplingPolicy(
+                        opponent_rand.choice(opponent_weights), opponent_rand, greedy=True)
+        session = sim.GameSession(game=g, check=True)
         while not session.is_over:
-            session.apply(sim.choose_action(g, session.decision))
+            d = session.decision
+            action = (decide(seat_policies[d.player], g, d) if d.player in seat_policies
+                      else sim.choose_action(g, d))
+            session.apply(action)
         r = session.result()
         total = r["total"][0]
         steps = policy.discards
@@ -174,7 +191,8 @@ def _numpy_weights(net):
     def layers(seq):
         return [(m.weight.detach().cpu().numpy().T.copy(), m.bias.detach().cpu().numpy().copy())
                 for m in seq if isinstance(m, nn.Linear)]
-    return layers(net.discard), layers(net.call), getattr(net, "prior", 0.0)
+    return (layers(net.discard), layers(net.call), getattr(net, "prior", 0.0),
+            getattr(net, "engine_calls", False))
 
 
 def _ppo_update(net, critic, opt, X, M, A, R, XC, TK, RC, entropy, value_coef,
@@ -192,7 +210,7 @@ def _ppo_update(net, critic, opt, X, M, A, R, XC, TK, RC, entropy, value_coef,
 
     def advantages(v, r):
         a = r - v
-        return (a - a.mean()) / (a.std() + 1e-6)
+        return (a - a.mean()) / (a.std(unbiased=False) + 1e-6)
 
     with torch.no_grad():
         old = F.log_softmax(net.discard_logits(X, M), -1).gather(1, A[:, None]).squeeze(1)
@@ -236,7 +254,7 @@ def _ppo_update(net, critic, opt, X, M, A, R, XC, TK, RC, entropy, value_coef,
 def selfplay(out_path, iterations=150, games_per_iter=400, hidden=256, lr=3e-4,
              entropy=0.01, value_coef=0.5, init=None, seed=0, workers=None,
              eval_every=25, ppo_epochs=4, batch_size=512, shaping=1.0, shaping_iters=600,
-             start_iter=1, eval_games=1000, prior=2.5, log=print):
+             start_iter=1, eval_games=1000, prior=2.5, log=print, opponent_models=(), engine_calls=None):
     """Train the policy by self-play and save it (loadable by MLPolicy /
     `evaluate`), plus the best greedy-test version as <out>_best.pt.
 
@@ -263,21 +281,28 @@ def selfplay(out_path, iterations=150, games_per_iter=400, hidden=256, lr=3e-4,
                 m.p = 0.0
     else:
         net = PolicyNet(hidden=hidden, dropout=0.0, prior=prior)
+    if engine_calls is not None:
+        net.engine_calls = engine_calls
     # Critic: how many units a position is worth to Player 1 from here on.
     critic = nn.Sequential(nn.Linear(STATE_SIZE, hidden), nn.ReLU(),
                            nn.Linear(hidden, hidden // 2), nn.ReLU(),
                            nn.Linear(hidden // 2, 1))
     critic_path = os.path.splitext(out_path)[0] + "_critic.pt"
-    if init and os.path.exists(os.path.splitext(init)[0] + "_critic.pt"):
-        critic.load_state_dict(torch.load(os.path.splitext(init)[0] + "_critic.pt"))
+    if init:
+        from .search import critic_path as find_critic
+        initial_critic = find_critic(init)
+        if initial_critic is not None:
+            critic.load_state_dict(torch.load(initial_critic, map_location="cpu"))
     opt = torch.optim.Adam(list(net.parameters()) + list(critic.parameters()), lr=lr)
     best_path = os.path.splitext(out_path)[0] + "_best.pt"
+    best_critic_path = os.path.splitext(best_path)[0] + "_critic.pt"
     best_units = None
 
     workers = workers or os.cpu_count() or 1
     master = random.Random(seed)
     t = lambda a: torch.tensor(np.array(a), dtype=torch.float32)
     history = []
+    frozen_opponents = [_numpy_weights(load_model(path)[0]) for path in opponent_models]
     with ProcessPoolExecutor(max_workers=workers) as pool:
         for it in range(start_iter, start_iter + iterations):
             beta = shaping * max(0.0, 1.0 - (it - 1) / shaping_iters) if shaping_iters else 0.0
@@ -286,7 +311,9 @@ def selfplay(out_path, iterations=150, games_per_iter=400, hidden=256, lr=3e-4,
             seeds = [master.randrange(2 ** 62) for _ in range(games_per_iter)]
             chunks = [seeds[i::workers] for i in range(workers)]
             D, C, G = [], [], []
-            for d, c, g in pool.map(play_games, [weights] * workers, chunks):
+            opponents = frozen_opponents + [weights] if frozen_opponents else None
+            for d, c, g in pool.map(play_games, [weights] * workers, chunks,
+                                    [False] * workers, [opponents] * workers):
                 D += d
                 C += c
                 G += g
@@ -333,6 +360,7 @@ def selfplay(out_path, iterations=150, games_per_iter=400, hidden=256, lr=3e-4,
                 if best_units is None or units > best_units:
                     best_units = units
                     save_model(best_path, net, meta)
+                    torch.save(critic.state_dict(), best_critic_path)
                     note = f", new best -> {best_path}"
                 log(f"  greedy test on {len(ev)} games: {units:+.2f} units/game, win {win:.1f}%  "
                     f"(saved to {out_path}{note})")

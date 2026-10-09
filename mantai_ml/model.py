@@ -27,6 +27,7 @@ class PolicyNet(nn.Module):
         super().__init__()
         self.hidden = hidden
         self.prior = prior
+        self.engine_calls = False
         self.discard = nn.Sequential(
             nn.Linear(STATE_SIZE, hidden), nn.ReLU(), nn.Dropout(dropout),
             nn.Linear(hidden, hidden), nn.ReLU(), nn.Dropout(dropout),
@@ -56,6 +57,7 @@ def save_model(path, net, metrics=None):
         "feature_version": FEATURE_VERSION,
         "hidden": net.hidden,
         "prior": getattr(net, "prior", 0.0),
+        "engine_calls": getattr(net, "engine_calls", False),
         "state_dict": net.state_dict(),
         "metrics": metrics or {},
     }, path)
@@ -66,6 +68,7 @@ def load_model(path, device="cpu"):
     if ckpt.get("feature_version") != FEATURE_VERSION:
         raise ValueError(f"{path} was trained with different features; retrain it.")
     net = PolicyNet(hidden=ckpt["hidden"], prior=ckpt.get("prior", 0.0))
+    net.engine_calls = ckpt.get("engine_calls", False)
     net.load_state_dict(ckpt["state_dict"])
     net.to(device).eval()
     return net, ckpt.get("metrics", {})

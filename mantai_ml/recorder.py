@@ -9,8 +9,8 @@ from .records import tile_list, write_records
 class GameRecorder:
     """Attach to a game (game.recorder = GameRecorder(...)) to log decisions.
 
-    players : which seats to record. Default is Player 1 only, since Players
-              2-4 act randomly and are not worth imitating.
+    players : which seats to record. Default is Player 1, whose tuned engine
+              is the teacher when recording with player1="engine".
     """
 
     def __init__(self, players=(0,), source="sim"):
@@ -37,6 +37,7 @@ class GameRecorder:
             "bonus": tile_list(state["bonus"]),
             "seat": state["seat"], "prevailing": state["prevailing"],
             "wall_left": state["wall_left"],
+            "opponents": state["opponents"],
         }
         if kind == "call":
             r["call_type"] = call_type
@@ -67,7 +68,7 @@ def record_games(n_games, out_path, player1="engine", players=(0,), seed=None, p
     def setup(game):
         game.recorder = recorder
 
-    stats = sim.simulate(n_games, seed=seed, check=False, progress=progress,
+    stats = sim.simulate(n_games, seed=seed, check=True, progress=progress,
                          player1=player1, setup=setup)
     write_records(out_path, recorder.records, append=False)
     return len(recorder.records), stats

@@ -29,6 +29,10 @@ class MLPolicy:
 
     @torch.no_grad()
     def should_call(self, game, player, tile, call_type):
+        if self.net.engine_calls:
+            from Decision_Strategy_engine import engine_should_call
+            engine = game.strategy if player == 0 else game.opponent_engines[player]
+            return engine_should_call(game, player, tile, call_type, engine)
         s, x = self._state(game, player)
         own = [t for m in s["melds"] for t in m]
         a = call_analysis(s["hand"], s["melds"], s["visible"] + own, s["bonus"],
@@ -40,7 +44,8 @@ class MLPolicy:
         # Which run to form is left to the strategy engine; the model decides
         # only whether to Chi at all.
         from Decision_Strategy_engine import engine_chi_sequence
-        seq = engine_chi_sequence(game, player, tile, game.strategy)
+        engine = game.strategy if player == 0 else game.opponent_engines[player]
+        seq = engine_chi_sequence(game, player, tile, engine)
         if seq is None:
             options = game.chi_options(player, tile)
             seq = options[0] if options else None

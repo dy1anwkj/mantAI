@@ -48,14 +48,14 @@ def cmd_train(a):
     _ensure_dir(a.out)
     train(a.data, a.out, epochs=a.epochs, hidden=a.hidden, lr=a.lr,
           controllers=set(a.controllers) if a.controllers else None,
-          winners_only=a.winners_only, win_weight=a.win_weight, seed=a.seed, device=a.device)
+          winners_only=a.winners_only, win_weight=a.win_weight, seed=a.seed, device=a.device, init=a.init)
 
 
 def cmd_evaluate(a):
     import mahjong_simulator as sim
     if a.search:
         from .search import evaluate_search
-        stats = evaluate_search(a.model, a.games, a.search, seed=a.seed)
+        stats = evaluate_search(a.model, a.games, a.search, seed=a.seed, reference=a.search_reference)
         sim.print_report(stats, label=f"Player 1 = search ({a.search} playouts a discard)")
     else:
         from .ml_player import evaluate_policy
@@ -71,7 +71,8 @@ def cmd_selfplay(a):
     selfplay(a.out, iterations=a.iterations, games_per_iter=a.games, hidden=a.hidden, lr=a.lr,
              entropy=a.entropy, init=a.init, seed=a.seed, workers=a.workers,
              eval_every=a.eval_every, shaping=a.shaping, shaping_iters=a.shaping_iters,
-             start_iter=a.start_iter, eval_games=a.eval_games, prior=a.prior)
+             start_iter=a.start_iter, eval_games=a.eval_games, prior=a.prior,
+             opponent_models=a.opponent_models, engine_calls=a.engine_calls)
 
 
 def cmd_crops(a):
@@ -140,6 +141,7 @@ def main(argv=None):
     s.set_defaults(func=cmd_record)
 
     s = sub.add_parser("train", help="train the policy network on records")
+    s.add_argument("--init", help="fine-tune an existing policy on decision records")
     s.add_argument("--data", nargs="+", required=True, help="one or more .jsonl files")
     s.add_argument("--out", default="models/policy.pt")
     s.add_argument("--epochs", type=int, default=15)
@@ -153,6 +155,8 @@ def main(argv=None):
     s.set_defaults(func=cmd_train)
 
     s = sub.add_parser("evaluate", help="play the model as Player 1 in the simulator")
+    s.add_argument("--search-reference", choices=["network", "engine"], default="network",
+                   help="which choice search keeps unless a challenger scores clearly better")
     s.add_argument("--model", default="models/policy.pt")
     s.add_argument("--games", type=int, default=500)
     s.add_argument("--seed", type=int)
@@ -162,6 +166,10 @@ def main(argv=None):
     s.set_defaults(func=cmd_evaluate)
 
     s = sub.add_parser("selfplay", help="train the policy by self-play (reinforcement learning)")
+    s.add_argument("--engine-calls", action="store_true", default=None,
+                   help="learn discards while the strategy engine chooses calls")
+    s.add_argument("--opponent-models", nargs="*", default=[],
+                   help="mix frozen learned opponents and the current policy with engine opponents")
     s.add_argument("--iterations", type=int, default=150)
     s.add_argument("--games", type=int, default=400, help="games per iteration")
     s.add_argument("--out", default="models/selfplay.pt")
