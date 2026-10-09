@@ -164,8 +164,12 @@ class Table:
             self.hint_cache = {
                 "tile": found["tile"], "win_percent": best["win"], "samples": found["simulations"] or best["visits"],
                 "prior": best["prior"], "engine": found["engine"],
-                "candidates": [{"tile": c["tile"], "prior": c["prior"], "units": c["units"], "win": c["win"]}
-                               for c in found["candidates"]],
+                # The network's own first choice, which the search keeps unless
+                # another tile scored clearly more on the same guessed deals.
+                "favourite": max(found["candidates"], key=lambda c: c["prior"])["tile"],
+                "candidates": [{"tile": c["tile"], "prior": c["prior"], "units": c["units"], "win": c["win"],
+                                "visits": c["visits"]}
+                               for c in [best] + found["candidates"][1:]],
             }
         elif self.hint_cache is None:
             tile = engine_discard_decision(s.game, 0, s.game.strategy).details[0]["tile"]

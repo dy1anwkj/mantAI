@@ -163,6 +163,9 @@ class TableTests(unittest.TestCase):
         self.assertIn(hint["tile"], legal)
         self.assertGreater(hint["samples"], 0)
         self.assertIn(hint["tile"], [c["tile"] for c in hint["candidates"]])
+        self.assertIn(hint["favourite"], [c["tile"] for c in hint["candidates"]])
+        self.assertEqual(hint["candidates"][0]["tile"], hint["tile"])
+        self.assertTrue(all(c["visits"] > 0 for c in hint["candidates"]) or len(hint["candidates"]) == 1)
         for _ in range(3):      # your discards, then the searched AI turns
             if table.session.is_over:
                 break
