@@ -168,7 +168,7 @@ class Table:
                 # another tile scored clearly more on the same guessed deals.
                 "favourite": max(found["candidates"], key=lambda c: c["prior"])["tile"],
                 "candidates": [{"tile": c["tile"], "prior": c["prior"], "units": c["units"], "win": c["win"],
-                                "visits": c["visits"]}
+                                "visits": c["visits"], "value": c["value"]}
                                for c in [best] + found["candidates"][1:]],
             }
         elif self.hint_cache is None:

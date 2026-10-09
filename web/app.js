@@ -15,39 +15,32 @@ async function loadHint(){
   }catch(error){if(state.revision===revision)hintMessage='Recommendation unavailable. You can still play.';}
   finally{if(state.revision===revision&&!busy){hintLoading=false;renderHint();}}
 }
-const pct=x=>x==null?'—':`${x.toFixed(1)}%`;
 const pts=x=>x==null?'—':`${x>=0?'+':''}${x.toFixed(2)}`;
 function renderEvidence(){
   const box=$('evidence');box.replaceChildren();
   const r=recommendation;
   if(busy||hintLoading||!r||r.action||!state?.started||state.over||state.decision!=='turn'){box.hidden=true;return;}
   box.hidden=false;box.append(el('h3','Why this tile?'));
-  const reasons=[],rows=r.candidates?.length?r.candidates:[{tile:r.tile,win:r.win_percent,units:null,prior:null,deal_in:r.deal_in,visits:r.samples}];
-  if(r.candidates?.length>1){
-    const mine=rows.find(c=>same(c.tile,r.tile)),fav=rows.find(c=>same(c.tile,r.favourite));
-    if(!fav||same(r.tile,r.favourite))reasons.push(`It is the trained network's first choice (${(100*r.prior).toFixed(0)}% confidence), and on the same guessed deals no other tile scored clearly better.`);
-    else reasons.push(`The network preferred ${label(r.favourite)}, but ${label(r.tile)} scored ${pts(mine.units-fav.units)} points a hand more on the same guessed deals: a clear enough margin to switch.`);
-    reasons.push(`${r.samples} playouts compared ${rows.length} tiles. Each playout guesses the hidden hands from what the opponents have thrown and claimed, then plays the hand to the end.`);
-    if(r.engine)reasons.push(same(r.engine,r.tile)?'The hand-tuned strategy engine picks the same tile.':`The hand-tuned strategy engine would throw ${label(r.engine)}; it was tested too.`);
-  }else if(r.candidates?.length===1){
-    reasons.push(`Only one discard is worth considering here. ${r.samples} quick playouts estimate your chance of winning the hand after it.`);
-  }else{
-    reasons.push(`The strategy engine's pick (the trained network is off). You won ${pct(r.win_percent)} of ${r.samples} playouts after throwing it.`);
+  const rows=(r.candidates||[]).filter(c=>c.visits&&c.value!=null);
+  if(rows.length<2){
+    box.append(el('p',r.candidates?.length?`The only sensible discard here, checked with ${r.samples} playouts.`:`The strategy engine's pick, checked with ${r.samples} playouts.`));
+    return;
   }
-  if(r.deal_in!=null)reasons.push(`Deal-in risk ${pct(100*r.deal_in)}: the danger model's chance this tile lets an opponent win off you.`);
-  reasons.forEach(text=>box.append(el('p',text)));
+  const mine=rows.find(c=>same(c.tile,r.tile)),fav=rows.find(c=>same(c.tile,r.favourite));
+  box.append(el('p',!fav||same(r.tile,r.favourite)
+    ?'The network\'s first choice. No other tile beat its score by a clear margin on the same deals.'
+    :`Beat the network's first choice, ${label(r.favourite)}, by ${pts(mine.value-fav.value)} points a hand on the same deals.`));
   const wrap=el('div',undefined,'evidence-scroll'),table=el('table'),head=el('tr');
-  ['Tile','Win chance','Avg points','Network','Deal-in risk','Playouts'].forEach(h=>head.append(el('th',h)));
+  ['Tile','Score (points a hand)','Playouts'].forEach(h=>head.append(el('th',h)));
   table.append(head);
   for(const c of rows){
     const row=el('tr',undefined,same(c.tile,r.tile)?'picked':'');
     const name=el('td');name.append(tile(c.tile,true),document.createTextNode(label(c.tile)+(same(c.tile,r.tile)?' ✓':'')));
-    row.append(name,el('td',pct(c.win)),el('td',pts(c.units)),el('td',c.prior==null?'—':`${(100*c.prior).toFixed(0)}%`),
-      el('td',c.deal_in==null?'—':pct(100*c.deal_in)),el('td',c.visits==null?'—':String(c.visits)));
+    row.append(name,el('td',pts(c.value)),el('td',String(c.visits)));
     table.append(row);
   }
   wrap.append(table);box.append(wrap);
-  box.append(el('p','Estimates from simulated hands, not guarantees. Avg points is the average result of the playouts after that discard.'+(rows.length>1?' The search spends its playouts on the most promising tiles, so rows with few playouts were dropped early and their numbers are rough.':''),'note'));
+  box.append(el('p','Score: half the points won in each playout, half the value network\'s estimate, averaged over the same guessed deals. Fewer playouts means a less reliable score.','note'));
 }
 function renderHint(){
   renderEvidence();
