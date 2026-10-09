@@ -13,6 +13,7 @@ play Players 2-4 as well; --engine-only plays the strategy engine alone.
 import argparse
 from copy import deepcopy
 from dataclasses import asdict
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 from pathlib import Path
@@ -29,17 +30,21 @@ except ImportError:          # the trained models need torch; without it the eng
     AlphaSearch = None
 
 STATIC = Path(__file__).parent / "web"
+SAVE_DIR = Path(__file__).parent / "data" / "web_hands"   # gitignored
 HINT_SIMULATIONS = 160       # searched playouts behind your recommended discard
 OPPONENT_SIMULATIONS = 64    # ... and behind each AI discard
 
 
 class Table:
-    def __init__(self, brain=None, ai_opponents=False):
+    def __init__(self, brain=None, ai_opponents=False, save_dir=None):
         """brain: an AlphaSearch that recommends your discard; None leaves it to
         the strategy engine. ai_opponents: the brain also plays Players 2-4
-        instead of the human-style engine opponents."""
+        instead of the human-style engine opponents. save_dir: where each hand
+        is saved for review (see save_record); None saves nothing."""
         self.brain = brain
         self.ai_opponents = ai_opponents and brain is not None
+        self.save_dir = Path(save_dir) if save_dir else None
+        self.record = None
         self.session = None
         self.revision = 0
         self.events = []
@@ -58,14 +63,28 @@ class Table:
         return dealer
 
     def new(self, seed=None):
+        if self.session is not None:
+            self.save_record()      # a hand left unfinished is kept too
         dealer = self.next_dealer()
         wind_round = self.session.game.wind_round if self.session else 0
         if self.session and dealer == 0 and self.session.game.dealer == 3:
             wind_round = (wind_round + 1) % 4
+        if seed is None:            # recorded, so a saved hand can be dealt again
+            seed = secrets.randbelow(2 ** 31)
         self.session = GameSession(seed=seed, dealer=dealer, wind_round=wind_round, check=True)
+        game = self.session.game
         if load_danger_model() is not None:
             # Your seat's engine reads the opponents with the learned danger model.
-            self.session.game.strategy = StrategyEngine(PLAYER1_WEIGHTS, opponent_model=OpponentAnalyzer())
+            game.strategy = StrategyEngine(PLAYER1_WEIGHTS, opponent_model=OpponentAnalyzer())
+        self.record = {
+            "started": datetime.now().strftime("%Y%m%dT%H%M%S"), "seed": seed,
+            "dealer": dealer, "wind_round": wind_round, "styles": dict(game.styles),
+            "opponents": "alphago-search" if self.ai_opponents else "human-style",
+            "brain": "alphago-search" if self.brain is not None else "engine",
+            "start_hands": [game.sort_tiles(h) for h in game.hands],
+            "start_bonus": [list(b) for b in game.bonus],
+            "moves": [], "log": [],
+        }
         self.hint_cache = None
         self.events = ["A new hand begins. You are Player 1."]
         self.playback = []
@@ -79,6 +98,8 @@ class Table:
         if action.kind != "pass":
             tile = self.session.game.format_tile(action.tile) if action.tile else ""
             self.events.append(f"{name}: {action.kind.upper()} {tile}".strip())
+        if self.record is not None:
+            self.record["log"].append(dict(asdict(action), player=player))
         self.session.apply(action, player=player)
         self.events = self.events[-60:]
         if action.kind == "discard":
@@ -102,6 +123,8 @@ class Table:
                 self.play(decide(self.brain, self.session.game, decision))
             else:
                 self.play(choose_action(self.session.game, decision))
+        if self.session.is_over:
+            self.save_record()
 
     def act(self, index, revision):
         if self.session is None or revision != self.revision:
@@ -112,10 +135,49 @@ class Table:
         if type(index) is not int or not 0 <= index < len(actions):
             raise ValueError("Choose a legal action.")
         self.playback = []
+        if self.record is not None:
+            self.record["moves"].append(self.move_record(actions[index]))
         self.play(actions[index])
         self.hint_cache = None
         self.revision += 1
         self.advance()
+
+    def move_record(self, action):
+        """One of your moves for the saved hand: your tiles at the time, what
+        the box recommended (None if it had not loaded yet) and what you chose."""
+        s, game, rec = self.session, self.session.game, self.hint_cache
+        shown = None
+        if rec is not None and "action" in rec:
+            shown = {k: rec["action"][k] for k in ("kind", "tile", "chi")}
+        elif rec is not None:
+            shown = {"kind": "discard", "tile": rec["tile"], "chi": None, "win_percent": rec["win_percent"],
+                     "scores": [{"tile": c["tile"], "score": c["value"], "playouts": c["visits"]}
+                                for c in rec.get("candidates", []) if c.get("visits")]}
+        chosen = asdict(action)
+        return {
+            "turn": game.turns, "decision": s.decision.kind,
+            "claim_tile": s.decision.tile if s.decision.kind != "turn" else None,
+            "hand": game.sort_tiles(game.hands[0]), "melds": [list(m) for m in game.melds[0]],
+            "recommended": shown, "chosen": chosen,
+            "followed": None if shown is None else all(shown[k] == chosen[k] for k in ("kind", "tile", "chi")),
+        }
+
+    def save_record(self):
+        """Write the hand to save_dir as JSON, once: when it ends, or when a new
+        hand replaces it after you have moved. Nothing is written without a
+        save_dir, so tests and simulations leave no files."""
+        if self.save_dir is None or self.record is None or self.record.get("saved"):
+            return
+        s, game = self.session, self.session.game
+        if not s.is_over and not self.record["moves"]:
+            return
+        out = dict(self.record, finished=s.is_over, result=s.result() if s.is_over else None,
+                   final_hands=[game.sort_tiles(h) for h in game.hands],
+                   melds=game.melds, discards=game.discards, bonus=game.bonus)
+        self.save_dir.mkdir(parents=True, exist_ok=True)
+        path = self.save_dir / f"hand_{self.record['started']}_seed{self.record['seed']}.json"
+        path.write_text(json.dumps(out, indent=1, default=str))
+        self.record["saved"] = str(path)
 
     def recommended_call(self):
         """Index of your recommended Hu, Kong, Pong, Chi or Pass among the legal
@@ -271,9 +333,9 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(400, {"error": str(exc)})
 
 
-def create_server(port=8000, brain=None, ai_opponents=False):
+def create_server(port=8000, brain=None, ai_opponents=False, save_dir=None):
     server = HTTPServer(("127.0.0.1", port), Handler)
-    server.table = Table(brain, ai_opponents)
+    server.table = Table(brain, ai_opponents, save_dir)
     server.token = secrets.token_urlsafe(32)
     return server
 
@@ -285,6 +347,8 @@ if __name__ == "__main__":
                         help="play the strategy engine alone, without the trained models")
     parser.add_argument("--ai-opponents", action="store_true",
                         help="the trained search plays Players 2-4 instead of the human-style engine")
+    parser.add_argument("--no-save", action="store_true",
+                        help=f"don't save each hand for review (default: {SAVE_DIR.relative_to(Path(__file__).parent)})")
     parser.add_argument("--model", help="trained network (default models/alpha_best.pt)")
     parser.add_argument("--simulations", type=int, default=OPPONENT_SIMULATIONS,
                         help="searched playouts behind each AI discard")
@@ -299,13 +363,14 @@ if __name__ == "__main__":
                   flush=True)
         else:
             brain = AlphaSearch(model, simulations=args.simulations)
-    with create_server(args.port, brain, args.ai_opponents) as server:
+    with create_server(args.port, brain, args.ai_opponents, None if args.no_save else SAVE_DIR) as server:
         print(f"Play Mahjong at http://127.0.0.1:{server.server_port} (Ctrl+C to stop)", flush=True)
         print("Opponents: " + (f"search ({args.simulations} playouts per discard)"
                                 if args.ai_opponents and brain is not None
                                 else "human-style engine (aggressive / balanced / cautious)"), flush=True)
         print("Your recommendation: " + ("strategy engine" if brain is None else
               f"search ({HINT_SIMULATIONS} playouts) over {brain.model_path}"), flush=True)
+        print("Hands are " + ("not saved" if args.no_save else f"saved to {SAVE_DIR}"), flush=True)
         try:
             server.serve_forever()
         except KeyboardInterrupt:

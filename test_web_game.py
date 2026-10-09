@@ -5,11 +5,12 @@ import tempfile
 import threading
 import unittest
 from dataclasses import asdict
+from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from mahjong_simulator import choose_action
+from mahjong_simulator import GameSession, choose_action
 from web_game import Table, create_server
 
 
@@ -70,6 +71,58 @@ class TableTests(unittest.TestCase):
                 if claims >= 10:
                     break
         self.assertGreaterEqual(claims, 10)
+
+    def test_hands_are_saved_with_your_moves_and_the_recommendations(self):
+        with tempfile.TemporaryDirectory() as folder, \
+                patch('web_game.rate_discards', return_value={}) as rate:
+            rate.side_effect = lambda game, player, tiles, **kw: {tiles[0]: {'win': 40.0, 'playouts': 4}}
+            table = Table(save_dir=folder)
+            table.new(seed=11)
+            followed = 0
+            while not table.session.is_over:
+                hint = table.hint(table.revision)["recommendation"]
+                actions = table.session.legal_actions()
+                if followed % 3 == 2 and "action" not in hint:     # sometimes go our own way
+                    index = next(i for i, a in enumerate(actions) if a.kind == "discard" and a.tile != hint["tile"])
+                elif "action" in hint:
+                    index = hint["action"]["id"]
+                else:
+                    index = next(i for i, a in enumerate(actions) if a.kind == "discard" and a.tile == hint["tile"])
+                followed += 1
+                table.act(index, table.revision)
+            files = os.listdir(folder)
+            self.assertEqual(len(files), 1)
+            self.assertIn("seed11", files[0])
+            saved = json.load(open(os.path.join(folder, files[0])))
+            self.assertTrue(saved["finished"])
+            self.assertEqual(saved["seed"], 11)
+            self.assertEqual(len(saved["moves"]), followed)
+            self.assertTrue(all(m["recommended"] is not None for m in saved["moves"]))
+            self.assertTrue(any(m["followed"] for m in saved["moves"]))
+            if followed >= 3:
+                self.assertTrue(any(m["followed"] is False for m in saved["moves"]))
+            self.assertEqual(saved["result"]["winner"], table.session.result()["winner"])
+            # The saved seed deals the same hand again.
+            again = GameSession(seed=saved["seed"], dealer=saved["dealer"], wind_round=saved["wind_round"]).game
+            self.assertEqual(json.loads(json.dumps([again.sort_tiles(h) for h in again.hands])), saved["start_hands"])
+            # A hand abandoned after one move is saved as unfinished; one with no moves is not.
+            table.new(seed=12)
+            if not table.session.is_over:
+                table.act(next(i for i, a in enumerate(table.session.legal_actions())
+                               if a.kind in ("discard", "pass")), table.revision)
+            table.new(seed=13)
+            table.new(seed=14)
+            names = sorted(os.listdir(folder))
+            self.assertTrue(any("seed12" in n for n in names))
+            self.assertFalse(any("seed13" in n for n in names))
+            twelve = json.load(open(os.path.join(folder, next(n for n in names if "seed12" in n))))
+            self.assertTrue(twelve["moves"] or twelve["finished"])
+        # Without a save_dir nothing is written.
+        with tempfile.TemporaryDirectory() as folder, patch('web_game.SAVE_DIR', Path(folder)):
+            table = Table()
+            table.new(seed=11)
+            table.save_record()
+            self.assertEqual(os.listdir(folder), [])
 
     def test_discard_playback_is_ordered_and_snapshots_are_independent(self):
         table = Table()
