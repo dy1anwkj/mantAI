@@ -1,11 +1,13 @@
 # mantAI
 
-**An AlphaGo-style coach for Singapore Mahjong.** You play Player 1 in the browser
-against three computer opponents. On every move, mantAI tells you what to do and
-shows the numbers behind it: a self-play network proposes discards, and a search
-plays each one out on guessed versions of the hidden tiles before recommending it.
+**An AlphaGo-inspired AI for Singapore Mahjong, aiming to beat three human
+players through machine learning and reinforcement learning.** The browser game
+lets you play Player 1 against three computer opponents and follow the AI's
+discard and claim recommendations. A learned policy, statistical hand analysis,
+decision engines, and search over possible hidden deals support its decisions.
+Performance against real humans has not yet been measured.
 
-![The mantAI table: the recommended discard, its win chance, and the score of every tile the search compared](docs/screenshot.jpg)
+![An earlier mantAI table showing discard recommendations and search scores](docs/screenshot.jpg)
 
 ## Quick start
 
@@ -20,21 +22,36 @@ pip install -r requirements.txt
 python web_game.py
 ```
 
-Open **http://127.0.0.1:8000** and click **New hand**. The trained models are
+Open **http://127.0.0.1:8000** and select **Play**. The trained models are
 included in `models/`, so there is nothing to train first. Without PyTorch the
 game still runs, with the strategy engine making the recommendations.
 
 ## What you see
 
+- **Three-dice opening:** dice select the wall break, followed by animated
+  dealing. The backend uses that break to deal the actual hands.
+- **Physical walls:** 74 two-tile stacks surround the discard field. Wall
+  occupancy follows actual draws, with gold marking the live draw end and
+  pink marking the flower/Kong replacement end.
+- **Point balances:** each player starts with 1,000 points. Kong, bonus, and
+  winning-hand payments update balances, which carry across hands until the
+  server restarts. One scoring unit equals one point.
 - **The recommendation box**, above your hand: the tile to discard, your
   estimated chance of winning the hand after it, and every tile the search
   compared as `score (playouts)`, the pick highlighted.
 - **Claims:** when you can Chi, Pong, Kong or Hu, the box recommends an action
-  and outlines its button. A legal Hu is always recommended.
+  and outlines its button, including the exact tiles for Chi. It can also
+  recommend Pass. A legal Hu is always recommended; claim hints do not show
+  a simulated win percentage.
 - **Human-style opponents:** each opponent plays its own style, aggressive,
   balanced or cautious, as stand-ins for the human players mantAI is meant to beat.
 - **Saved hands for review:** each hand is saved to `data/web_hands/` with every
   move, what was recommended and what you chose. `--no-save` turns this off.
+- **Options:** adjust action pacing and enable or disable recommendations.
+
+This is a local single-player table; there is no online multiplayer. Browser
+tabs share the same game. Refreshing preserves the hand and point balances while
+the Python server stays running.
 
 More detail on the web game: [docs/WEB_GAME.md](docs/WEB_GAME.md).
 
@@ -43,9 +60,9 @@ More detail on the web game: [docs/WEB_GAME.md](docs/WEB_GAME.md).
 mantAI follows the recipe AlphaGo used, adapted to a game with hidden tiles
 ([mantai_ml/search.py](mantai_ml/search.py)):
 
-1. **Policy network.** Trained from a library of Mahjong rule and strategy
-   books ([mantai_ml/knowledge.py](mantai_ml/knowledge.py)), then improved by
-   self-play reinforcement learning under the rules, rewarded by points won. It
+1. **Policy network.** Starts with hand analysis and strategy features encoded
+   from the study library ([mantai_ml/knowledge.py](mantai_ml/knowledge.py)),
+   then improves through reinforcement learning, rewarded by points won. It
    proposes the most promising discards. The hand-tuned strategy engine's pick
    is always tested too.
 2. **Guessed deals.** Opponents' hands are hidden, so each playout deals out a
@@ -59,6 +76,11 @@ mantAI follows the recipe AlphaGo used, adapted to a game with hidden tiles
 4. **Decision.** The network's first choice is kept unless another tile scored
    clearly better on the same deals, by a margin of 1.5 standard errors.
 
+The strategy engine measures distance from ready, unseen improving tiles,
+scoring potential, and defensive risk. A learned opponent model estimates
+readiness and deal-in risk from public information. The displayed win chance
+is a noisy estimate from simulations; the search compares expected points.
+
 ## Results
 
 Against the human-style opponents, playing every move by the recommendation
@@ -71,8 +93,9 @@ Against the human-style opponents, playing every move by the recommendation
 | Hand-tuned strategy engine | 2,000 | 33% | +0.99 |
 | Engine, on the same 200 deals as the search | 200 | 35% | +1.47 |
 
-- The search turns a weak network (+0.27) into a winning player (+1.30). It wins
-  less often than the engine but scores bigger hands.
+- These recorded runs show positive average points for both the network and
+  search. They use different sample sizes and do not establish a statistically
+  significant improvement from search.
 - The hand-tuned engine is still slightly ahead. Closing that gap through more
   self-play is the next step.
 - Chi, Pong and Kong recommendations come from the engine: with the engine
@@ -94,6 +117,7 @@ SPGG Mahjong Rules 2024 decides. Rules and scoring:
 |---|---|
 | [web_game.py](web_game.py), [web/](web) | The browser game: a local server plus HTML, CSS and JavaScript |
 | [mahjong_simulator.py](mahjong_simulator.py) | The game: deal, turns, claims, scoring and the playout simulator |
+| [wall_setup.py](wall_setup.py), [web/table_scene.js](web/table_scene.js) | Three-dice wall break, physical dealing, and table animations |
 | [singapore_rules.py](singapore_rules.py) | Tai scoring and payments |
 | [Decision_Strategy_engine.py](Decision_Strategy_engine.py) | The hand-tuned strategy engine (also the opponents) |
 | [D_hand_eval.py](D_hand_eval.py) | Hand evaluation: winning shapes, waits, tile efficiency |
@@ -106,6 +130,11 @@ SPGG Mahjong Rules 2024 decides. Rules and scoring:
 
 ## Training
 
+The current command trains the learned player against three strategy-engine
+opponents. Training all four seats with learned policies is a future step.
+`--games` is the number of games **per iteration**; total training games are
+`--iterations × --games`. Evaluation games are additional.
+
 ```bash
 # Self-play from the book-based starting point
 python -m mantai_ml selfplay --iterations 1200 --games 400 --shaping 0 --out models/alpha.pt
@@ -115,6 +144,14 @@ python -m mantai_ml evaluate --model models/alpha_best.pt --games 1000 --compare
 python -m mantai_ml evaluate --model models/alpha_best.pt --games 200 --search 64 --compare
 ```
 
+To continue the included policy for 1,000 training games and save separate
+checkpoints:
+
+```bash
+python -m mantai_ml selfplay --init models/alpha_best.pt --iterations 10 --games 100 --shaping 0 --eval-games 100 --out models/continued.pt
+python web_game.py --model models/continued.pt
+```
+
 `python -m mantai_ml --help` lists every command.
 
 ## Tests
@@ -122,3 +159,7 @@ python -m mantai_ml evaluate --model models/alpha_best.pt --games 200 --search 6
 ```bash
 python -m pytest
 ```
+
+The video tests additionally need `opencv-python` and `pillow`. Without PyTorch,
+the ML tests are skipped. Wall setup and browser integration checks are in
+`tests/test_wall_setup.py` and `tests/test_web_game.py`.
