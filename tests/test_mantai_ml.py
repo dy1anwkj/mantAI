@@ -1,7 +1,7 @@
 """Tests for the mantai_ml package. Needs torch and numpy (pip install -r
 requirements.txt); without torch they are skipped. The video tests also need
 opencv and pillow and are skipped without them:
-    python -m pytest test_mantai_ml.py
+    python -m pytest tests/test_mantai_ml.py
 """
 import random
 from collections import Counter

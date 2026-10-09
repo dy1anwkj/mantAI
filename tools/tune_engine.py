@@ -9,7 +9,7 @@ deal. A change is kept only when it wins more units per game by more than
 and the result is finally checked against the starting weights on deals the
 search never saw.
 
-    python3 tune_engine.py --games 4000 --rounds 2 --check 20000
+    python -m tools.tune_engine --games 4000 --rounds 2 --check 20000
 
 Prints each step and writes the best weights to data/tuned_weights.json.
 Players 2-4 keep their styles (mahjong_simulator.OPPONENT_STYLES).

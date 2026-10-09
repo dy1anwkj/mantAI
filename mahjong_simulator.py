@@ -40,7 +40,7 @@ OPPONENT_STYLES = {
 }
 
 # Player 1's engine (also used for the human's hints), tuned against the
-# opponents above with tune_engine.py (data/tuned_weights.json): on 20000
+# opponents above with tools/tune_engine.py (data/tuned_weights.json): on 20000
 # deals the search never saw, these weights won +1.21 units a game against
 # +0.58 for the previous {"danger": 700} (+0.63 +/- 0.08). The table-reading
 # rules from the study PDFs (fresh_danger, flush_danger, fold) did not win

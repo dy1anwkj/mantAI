@@ -1,6 +1,6 @@
 # Play Mahjong in your browser
 
-From the project folder, after installing the requirements (see [README.md](README.md)):
+From the project folder, after installing the requirements (see [README.md](../README.md)):
 
 ```bash
 python web_game.py
@@ -43,7 +43,7 @@ progression are kept while the server remains running.
 Validation:
 
 ```bash
-python -m pytest test_web_game.py -v
+python -m pytest tests/test_web_game.py -v
 ```
 
 Decisions are made the way AlphaGo made them (`mantai_ml/search.py`):

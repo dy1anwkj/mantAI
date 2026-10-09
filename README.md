@@ -5,7 +5,7 @@ against three computer opponents. On every move, mantAI tells you what to do and
 shows the numbers behind it: a self-play network proposes discards, and a search
 plays each one out on guessed versions of the hidden tiles before recommending it.
 
-![The mantAI table: the recommended discard, its win chance, and the score of every tile the search compared](images/screenshot.jpg)
+![The mantAI table: the recommended discard, its win chance, and the score of every tile the search compared](docs/screenshot.jpg)
 
 ## Quick start
 
@@ -36,7 +36,7 @@ game still runs, with the strategy engine making the recommendations.
 - **Saved hands for review:** each hand is saved to `data/web_hands/` with every
   move, what was recommended and what you chose. `--no-save` turns this off.
 
-More detail on the web game: [WEB_GAME.md](WEB_GAME.md).
+More detail on the web game: [docs/WEB_GAME.md](docs/WEB_GAME.md).
 
 ## How it decides
 
@@ -100,7 +100,9 @@ SPGG Mahjong Rules 2024 decides. Rules and scoring:
 | [R_opponent_analysis.py](R_opponent_analysis.py) | Learned danger model: how likely a tile is to let an opponent win |
 | [mantai_ml/](mantai_ml) | Policy and value networks, self-play training and the search |
 | [models/](models) | Trained models: `alpha_best.pt`, `alpha_critic.pt`, `danger.npz` |
-| `test_*.py` | Tests |
+| [tests/](tests) | Tests (`python -m pytest`) |
+| [tools/](tools) | `tune_engine.py`: tunes the strategy engine's weights by simulation |
+| [docs/](docs) | The web game guide and the rule and strategy books the network started from |
 
 ## Training
 
