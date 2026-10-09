@@ -61,12 +61,11 @@ Decisions are made the way AlphaGo made them (`mantai_ml/search.py`):
    The network's favourite is played unless another tile clearly did better.
 
 Your recommendation searches 160 playouts (with `--ai-opponents`, each AI
-discard searches 64). The box shows the recommended tile and the estimated
-hand win chance. Below the table, **Why this tile?** shows the numbers the choice
-rests on: whether the search kept the network's first choice or beat it (and
-by how many points a hand), and each compared tile's search score with its
-number of playouts. The score is what decides: half the points won in each
-playout, half the value network's estimate, on the same guessed deals.
+discard searches 64). The box shows the recommended tile, the estimated hand
+win chance, and every tile the search compared as `score (playouts)`, the pick
+highlighted. The score decides: half the points won in each playout, half the
+value network's estimate, on the same guessed deals. The network's first choice
+is kept unless another tile beats it by a clear margin.
 
 When you can claim a tile (or Hu, or Kong on your own turn), the box recommends
 the action instead and outlines its button. A legal Hu is always recommended;

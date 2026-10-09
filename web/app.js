@@ -16,34 +16,7 @@ async function loadHint(){
   finally{if(state.revision===revision&&!busy){hintLoading=false;renderHint();}}
 }
 const pts=x=>x==null?'—':`${x>=0?'+':''}${x.toFixed(2)}`;
-function renderEvidence(){
-  const box=$('evidence');box.replaceChildren();
-  const r=recommendation;
-  if(busy||hintLoading||!r||r.action||!state?.started||state.over||state.decision!=='turn'){box.hidden=true;return;}
-  box.hidden=false;box.append(el('h3','Why this tile?'));
-  const rows=(r.candidates||[]).filter(c=>c.visits&&c.value!=null);
-  if(rows.length<2){
-    box.append(el('p',r.candidates?.length?`The only sensible discard here, checked with ${r.samples} playouts.`:`The strategy engine's pick, checked with ${r.samples} playouts.`));
-    return;
-  }
-  const mine=rows.find(c=>same(c.tile,r.tile)),fav=rows.find(c=>same(c.tile,r.favourite));
-  box.append(el('p',!fav||same(r.tile,r.favourite)
-    ?'The network\'s first choice. No other tile beat its score by a clear margin on the same deals.'
-    :`Beat the network's first choice, ${label(r.favourite)}, by ${pts(mine.value-fav.value)} points a hand on the same deals.`));
-  const wrap=el('div',undefined,'evidence-scroll'),table=el('table'),head=el('tr');
-  ['Tile','Score (points a hand)','Playouts'].forEach(h=>head.append(el('th',h)));
-  table.append(head);
-  for(const c of rows){
-    const row=el('tr',undefined,same(c.tile,r.tile)?'picked':'');
-    const name=el('td');name.append(tile(c.tile,true),document.createTextNode(label(c.tile)+(same(c.tile,r.tile)?' ✓':'')));
-    row.append(name,el('td',pts(c.value)),el('td',String(c.visits)));
-    table.append(row);
-  }
-  wrap.append(table);box.append(wrap);
-  box.append(el('p','Score: half the points won in each playout, half the value network\'s estimate, averaged over the same guessed deals. Fewer playouts means a less reliable score.','note'));
-}
 function renderHint(){
-  renderEvidence();
   const box=$('recommendation');box.replaceChildren();
   document.querySelectorAll('#hand .recommended, #actions .recommended').forEach(node=>node.classList.remove('recommended'));
   if(busy||!state?.started||state.over||!state.actions?.length)return;
@@ -54,7 +27,15 @@ function renderHint(){
     document.querySelector(`#actions button[data-id="${recommendation.action.id}"]`)?.classList.add('recommended');
     return;
   }
-  box.append(tile(recommendation.tile,true),el('span',`Recommended: ${label(recommendation.tile)} · Estimated hand win chance: ${recommendation.win_percent.toFixed(1)}%`));
+  const r=recommendation;
+  box.append(tile(r.tile,true),el('span',`${label(r.tile)} · Win ${r.win_percent.toFixed(1)}%`));
+  const rows=(r.candidates||[]).filter(c=>c.visits&&c.value!=null);
+  if(rows.length>1){
+    const list=el('span',undefined,'scores');
+    list.title='Search score in points a hand (playouts), on the same guessed deals. The pick beats the network\'s first choice only by a clear margin.';
+    for(const c of rows){const chip=el('span',undefined,'hint-score'+(same(c.tile,r.tile)?' picked':''));chip.append(tile(c.tile,true),el('span',`${pts(c.value)} (${c.visits})`));list.append(chip);}
+    box.append(list);
+  }
   document.querySelectorAll('#hand .tile').forEach(node=>{if(node.classList.contains(`face-${recommendation.tile[0]}-${recommendation.tile[1]}`))node.classList.add('recommended');});
 }
 const names = {east:'東',south:'南',west:'西',north:'北',red:'中',green:'發',white:'白'};
