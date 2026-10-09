@@ -1,11 +1,11 @@
-﻿let state, token, selected = null, busy = false;
+let state, token, selected = null, busy = false;
 const $ = id => document.getElementById(id);
 let replayStep = null;
-const ACTION_PAUSE_MS = 1500;
+let ACTION_PAUSE_MS = 1500;
 let recommendation = null, hintLoading = false, hintMessage = '';
 const playerWind = p => windNames[(state?.seats?.[p] || p+1)-1];
 async function loadHint(){
-  if(!state?.started || state.over || !state.actions?.length)return;
+  if(!$('hints-toggle').checked || !state?.started || state.over || !state.actions?.length)return;
   const revision=state.revision;
   hintLoading=true;renderHint();
   try{
@@ -19,7 +19,7 @@ const pts=x=>x==null?'—':`${x>=0?'+':''}${x.toFixed(2)}`;
 function renderHint(){
   const box=$('recommendation');box.replaceChildren();
   document.querySelectorAll('#hand .recommended, #actions .recommended').forEach(node=>node.classList.remove('recommended'));
-  if(busy||!state?.started||state.over||!state.actions?.length)return;
+  if(!$('hints-toggle').checked||busy||!state?.started||state.over||!state.actions?.length)return;
   if(hintLoading){box.textContent=state.decision==='turn'?'Calculating recommended discard and estimated win chance…':'Calculating recommended claim…';return;}
   if(!recommendation){box.textContent=hintMessage;return;}
   if(recommendation.action){
@@ -94,7 +94,7 @@ function fitDiscards(){
   const width=Math.max(1,river.clientWidth-88);
   const count=Math.max(1,...state.discards.map(p=>p.length));
   // All four piles remain in view; no clipping, scrolling, or removed tiles.
-  const size=Math.min(36,Math.max(1,(width-2*(count-1))/count));
+  const size=Math.min(36,Math.max(1,(width-2*(count-1))/count),Math.max(1,(river.clientHeight/4-6)/1.42));
   river.style.setProperty('--river-tile-width',`${size}px`);
   river.style.setProperty('--river-tile-height',`${size*1.42}px`);
 }
@@ -108,7 +108,12 @@ async function update(path,data){
   if(busy)return; busy=true; recommendation=null;hintLoading=false;hintMessage=''; $('error').textContent=''; render();
   try {
     const next=await request(path,data);selected=null;
+    if(path==='/api/new' && next.setup){
+      document.body.classList.remove('in-lobby');
+      await showSetup(next);
+    }
     for(const step of next.playback || []){
+      await animateWallDraws(step);
       replayStep=step;state=step.state;render();
       if(step.action.kind==='discard') animateDiscard(step.player);
       await new Promise(resolve=>setTimeout(resolve,ACTION_PAUSE_MS));
@@ -116,7 +121,7 @@ async function update(path,data){
     state=next;
   }
   catch(error){$('error').textContent=error.message;try{state=await request('/api/state');selected=null;}catch{}}
-  finally{replayStep=null;busy=false;render();loadHint();}
+  finally{replayStep=null;openingScene=false;document.body.classList.remove('opening-scene');$('opening').hidden=true;busy=false;render();loadHint();}
 }
 function animateDiscard(player){
   if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;
@@ -131,14 +136,16 @@ function animateDiscard(player){
 function actionText(a){let text=a.kind.toUpperCase();if(a.tile)text+=` · ${label(a.tile)}`;if(a.chi)text+=` with ${a.chi.map(label).join(' + ')}`;return text;}
 function actionButton(text,id){const b=el('button',text);b.dataset.id=id;b.disabled=busy;b.onclick=()=>update('/api/action',{id,revision:state.revision});return b;}
 function render(){
-  $('new').disabled=busy;$('new').textContent=busy?'Playing…':'New hand';
+  document.body.classList.toggle('in-lobby',!state?.started&&!openingScene);
+  $('play').disabled=busy;
+  $('new').disabled=busy;$('new').textContent=busy?'Playing…':state?.over?'Next hand · roll dice':'Roll & new hand';
   if(!state?.started){
     $('opponents').replaceChildren();
     for(const p of [1,2,3]){
       const box=el('section',undefined,`player seat-${seats[p-1]}`);
       box.append(el('div',bots[p-1][0],'avatar'),el('h3',`${bots[p-1]} · AI`),el('p',`Player ${p+1} · ${windNames[p]}`,'bot-info'));
       const backs=el('div',undefined,'backs');for(let i=0;i<13;i++)backs.append(el('span',undefined,'back'));
-      box.append(backs);$('opponents').append(box);
+      box.append(el('p','1,000 points','points-badge'),backs);$('opponents').append(box);
     }
     return;
   }
@@ -152,11 +159,12 @@ function render(){
       backs.classList.add('revealed-hand');backs.setAttribute('aria-label','Winning hand');
       state.winning_hand.hand.forEach(t=>backs.append(tile(t,true)));
     }else for(let i=0;i<state.counts[p];i++)backs.append(el('span',undefined,'back'));
-    box.append(backs,publicTiles(p));$('opponents').append(box);
+    box.append(el('p',`${state.points[p].toLocaleString()} points`,'points-badge'),backs,publicTiles(p));$('opponents').append(box);
   }
   $('meta').textContent=`${windLabels[state.wind]} round · ${state.wall} drawable tiles · Turn ${state.turn} · Dong → Nan → Xi → Bei`;
   $('your-seat').textContent=`Player 1 · ${windNames[state.seats[0]-1]}`;
-  renderDiscards();
+  $('your-points').textContent=`${state.points[0].toLocaleString()} points`;
+  renderDiscards(); renderField();
   $('status').textContent=busy?'The table is playing…':state.over?(state.result.winner===null?'The hand is a draw':state.result.winner===0?'You win!':`Player ${state.result.winner+1} wins`):state.decision==='turn'?'Your turn':state.decision==='rob_kong'?'A chance to rob the Kong':'Claim the discard?';
   if(replayStep)$('status').textContent=`${playerWind(replayStep.player)} · ${replayStep.action.kind==='discard'?'discards':replayStep.action.kind.toUpperCase()}`;
   $('pending').replaceChildren();
@@ -183,10 +191,16 @@ function render(){
     }
   }
   $('result').replaceChildren();
-  if(state.result){const r=state.result;$('result').append(el('p',r.winner===null?'No winner this hand.':`${r.tai} tai · ${r.self_drawn?'Self-drawn':`Discard from Player ${r.shooter+1}`}`));for(let p=0;p<4;p++)$('result').append(el('span',`${p===0?'You':`Player ${p+1}`}: ${r.total[p]>0?'+':''}${r.total[p]} units`,'score'));}
+  if(state.result){const r=state.result;$('result').append(el('p',r.winner===null?'No winner this hand.':`${r.tai} tai · ${r.self_drawn?'Self-drawn':`Discard from Player ${r.shooter+1}`}`));for(let p=0;p<4;p++)$('result').append(el('span',`${p===0?'You':`Player ${p+1}`}: ${r.total[p]>0?'+':''}${r.total[p]} points → ${state.points[p].toLocaleString()}`,'score'));}
   $('history').replaceChildren(...[...state.events].reverse().map(line=>el('li',line.replace(/\b(east|south|west|north)\b/gi,word=>windLabels[word.toLowerCase()]))));
   renderHint();
 }
 $('new').onclick=()=>{if(state?.started&&!state.over&&!confirm('End this hand and deal a new one?'))return;update('/api/new',{});};
+$('play').onclick=()=>update('/api/new',{});
+for(const id of ['help','table-help'])$(id).onclick=()=>$('help-dialog').showModal();
+for(const id of ['options','table-options'])$(id).onclick=()=>$('options-dialog').showModal();
+$('close-help').onclick=()=>$('help-dialog').close();
+$('close-options').onclick=()=>$('options-dialog').close();
+$('speed').onchange=()=>{ACTION_PAUSE_MS=Number($('speed').value);};
+$('hints-toggle').onchange=()=>{renderHint();if($('hints-toggle').checked&&!busy)loadHint();};
 update('/api/state');
-

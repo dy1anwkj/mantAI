@@ -18,9 +18,11 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 from pathlib import Path
 import secrets
+import random
 from urllib.parse import urlsplit
 
-from mahjong_simulator import PLAYER1_WEIGHTS, GameSession, choose_action, engine_discard_decision, rate_discards
+from wall_setup import deal_three_dice
+from mahjong_simulator import PLAYER1_WEIGHTS, MahjongGame, GameSession, choose_action, engine_discard_decision, rate_discards
 import singapore_rules as sg
 from Decision_Strategy_engine import StrategyEngine, engine_chi_sequence, engine_should_call
 from R_opponent_analysis import OpponentAnalyzer, load_danger_model
@@ -51,6 +53,15 @@ class Table:
         self.playback = []
         self.last_discard = None
         self.hint_cache = None
+        self.balances = [1000] * 4
+
+    def points(self):
+        """One existing payout unit is one point; reading never settles twice."""
+        if self.session is None:
+            return list(self.balances)
+        delta = (self.session.result()["total"] if self.session.is_over
+                 else self.session.game.instant)
+        return [self.balances[p] + delta.get(p, 0) for p in range(4)]
 
     def next_dealer(self):
         if self.session is None:
@@ -63,6 +74,7 @@ class Table:
         return dealer
 
     def new(self, seed=None):
+        balances = self.points()
         if self.session is not None:
             self.save_record()      # a hand left unfinished is kept too
         dealer = self.next_dealer()
@@ -71,8 +83,11 @@ class Table:
             wind_round = (wind_round + 1) % 4
         if seed is None:            # recorded, so a saved hand can be dealt again
             seed = secrets.randbelow(2 ** 31)
-        self.session = GameSession(seed=seed, dealer=dealer, wind_round=wind_round, check=True)
-        game = self.session.game
+        game = MahjongGame(dealer=dealer, wind_round=wind_round, rand=random.Random(seed))
+        game.verbose = False
+        deal_three_dice(game)
+        self.session = GameSession(game=game, check=True)
+        self.balances = balances
         if load_danger_model() is not None:
             # Your seat's engine reads the opponents with the learned danger model.
             game.strategy = StrategyEngine(PLAYER1_WEIGHTS, opponent_model=OpponentAnalyzer())
@@ -84,6 +99,7 @@ class Table:
             "start_hands": [game.sort_tiles(h) for h in game.hands],
             "start_bonus": [list(b) for b in game.bonus],
             "moves": [], "log": [],
+            "setup": deepcopy(game.wall_setup), "start_points": list(self.balances),
         }
         self.hint_cache = None
         self.events = ["A new hand begins. You are Player 1."]
@@ -93,6 +109,8 @@ class Table:
         self.advance()
 
     def play(self, action):
+        if hasattr(self.session.game.wall, "draws"):
+            self.session.game.wall.draws = []
         player = self.session.current_player
         name = "You" if player == 0 else f"Player {player + 1}"
         if action.kind != "pass":
@@ -106,10 +124,13 @@ class Table:
             self.last_discard = {"player": player, "tile": action.tile}
         elif action.kind in ("pong", "chi", "kong", "hu"):
             self.last_discard = None
-        if action.kind != "pass":
+        draws = getattr(self.session.game.wall, "draws", [])
+        if action.kind != "pass" or draws:
             snapshot = deepcopy(self.state())
             snapshot["actions"] = []
-            self.playback.append({"player": player, "action": asdict(action), "state": snapshot})
+            visible_action = asdict(action) if action.kind != "pass" else {"kind": "draw", "tile": None, "chi": None}
+            self.playback.append({"player": draws[0]["player"] if action.kind == "pass" else player,
+                                  "action": visible_action, "state": snapshot})
 
     def advance(self):
         while not self.session.is_over:
@@ -248,13 +269,22 @@ class Table:
 
     def state(self):
         if self.session is None:
-            return {"started": False, "revision": self.revision}
+            return {"started": False, "revision": self.revision, "points": self.points()}
         session, game = self.session, self.session.game
         # Explicit allowlist: never send AI concealed tiles or the remaining wall.
         result = session.result() if session.is_over else None
         decision = session.decision
+        setup = getattr(game, "wall_setup", None)
+        wall_stacks = [[0] * n for n in setup["stacks"]] if setup else []
+        for player, stack, _ in getattr(game.wall, "slots", []):
+            wall_stacks[player][stack - 1] += 1
         return {
             "started": True, "revision": self.revision, "over": session.is_over,
+            "points": self.points(), "hand_start_points": list(self.balances),
+            "setup": setup, "wall_stacks": wall_stacks,
+            "wall_ends": ({"live": game.wall.slots[-1], "replacement": game.wall.slots[0]}
+                          if getattr(game.wall, "slots", []) else None),
+            "wall_draws": getattr(game.wall, "draws", []),
             "hand": game.sort_tiles(game.hands[0]),
             "counts": [len(h) for h in game.hands],
             "discards": game.discards, "melds": game.melds, "bonus": game.bonus,
@@ -302,8 +332,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.respond(200, dict(self.server.table.state(), token=self.server.token))
         files = {"/": ("index.html", "text/html; charset=utf-8"),
                  "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+                 "/table_scene.js": ("table_scene.js", "text/javascript; charset=utf-8"),
                  "/style.css": ("style.css", "text/css; charset=utf-8"),
                  "/tiles.css": ("tiles.css", "text/css; charset=utf-8"),
+                 "/arcade.css": ("arcade.css", "text/css; charset=utf-8"),
                  "/tiles.webp": ("tiles.webp", "image/webp")}
         if path not in files:
             return self.respond(404, {"error": "Not found"})

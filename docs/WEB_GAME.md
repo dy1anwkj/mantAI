@@ -83,3 +83,54 @@ Player 1 starts the first hand as Dong. Click New hand after a result to continu
 Dong retains the dealer seat after winning; any other winner advances the dealer
 one player. Draws retain the dealer. After a full dealer rotation, the round wind
 advances Dong, Nan, Xi, Bei. Starting over before a hand ends retains the dealer.
+
+
+## Arcade interface and three-dice setup
+
+Click Play. Three dice tumble onto the field, then the selected player and stacks are counted automatically. The wall opens and packets fly to each player on the table.
+The 148-tile set is arranged as 74 two-tile stacks: 19 at Dong/Xi and 18 at
+Nan/Bei. Count players anticlockwise from the banker as 1. On the selected
+wall count N stacks from its owner's right to left and break after stack N.
+The banker takes the two complete stacks immediately left of the gap.
+At a corner, drawing continues onto the adjacent wall to that owner's left.
+
+The backend in wall_setup.py rotates the actual shuffled wall at that break;
+this is not just a visual dice effect. Three rounds of four-tile packets are
+dealt banker-first anticlockwise, then one tile to each player and one extra
+to the banker. Existing bonus replacement rules run afterward. Wall racks show
+actual remaining stack occupancy, including draws and replacement tiles.
+
+The menu offers Play, How to play and Options. Options changes action pacing
+and enables or disables recommendations. This remains a single-player game
+against three AI bots. The interface uses original MantAI branding.
+
+Validate the setup and browser adapter:
+
+```powershell
+.\venv\Scripts\python.exe -B -m pytest tests/test_wall_setup.py tests/test_web_game.py -q
+```
+
+The four physical walls enclose the central discard field throughout play.
+Gold marks the live dealing/draw end and pink marks the opposite flower/Kong
+replacement end. Both advance according to the backend's actual wall draws.
+The opening uses the same backend dice and wall positions that determine the
+hands; it is not an independent cosmetic roll. Exposed bonus tiles are shown
+before their replacement is drawn from the opposite end. The old setup dialog
+has been replaced by this automatic on-table sequence.
+## Claim recommendations and point balances
+
+Every player begins with 1,000 points. Seat badges show current balances, which
+carry across hands while this server is running. Refreshing does not reset them;
+restarting the server starts a new 1,000-point game. Existing instant Kong and
+bonus payments are included, and each finished hand's tai payout is applied once.
+The table total stays at 4,000 points.
+
+One backend payout unit equals one point. For tai 1 through 5, the base is
+1, 2, 4, 8, 16. On a discard win, the discarder pays twice that base and the other
+two losers pay once each. For a self-draw all three losers pay twice the base.
+The winner receives the total paid. The result shows each change and new balance.
+
+When responding to a discard, the hint highlights a legal Chi (with its exact
+pair of tiles), Pong, Kong, Hu or Pass using the strategy engine. Call hints are
+strategy recommendations; they do not claim a simulated win percentage. Your
+own discard-turn hint continues to show the estimated win percentage.

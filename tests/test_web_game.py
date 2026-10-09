@@ -1,6 +1,7 @@
 """Integration checks for the local browser adapter."""
 import json
 import os
+import random
 import tempfile
 import threading
 import unittest
@@ -10,18 +11,75 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from mahjong_simulator import GameSession, choose_action
+from mahjong_simulator import Action, Decision, MahjongGame, GameSession, choose_action
+from wall_setup import deal_three_dice
+import singapore_rules as sg
 from web_game import Table, create_server
 
 
 class TableTests(unittest.TestCase):
+    def test_claim_hint_selects_legal_pong_chi_pass_and_hu(self):
+        t = Table()
+        t.new(seed=7)
+        offered = ('bamboo', 3)
+        chi = Action('chi', offered, (('bamboo', 1), ('bamboo', 2)))
+        actions = (Action('pass'), Action('pong', offered), chi)
+        t.session.decision = Decision(0, 'claim', actions, offered, 3)
+        with patch('web_game.engine_should_call', return_value=True):
+            self.assertEqual(t.hint(t.revision)['recommendation']['action']['kind'], 'pong')
+        t.hint_cache = None
+        with patch('web_game.engine_should_call', return_value=False), patch('web_game.engine_chi_sequence', return_value=list(chi.chi)):
+            hint = t.hint(t.revision)['recommendation']['action']
+            self.assertEqual(hint['kind'], 'chi')
+            self.assertEqual(hint['chi'], chi.chi)
+            self.assertEqual(actions[hint['id']], chi)
+        t.hint_cache = None
+        with patch('web_game.engine_should_call', return_value=False), patch('web_game.engine_chi_sequence', return_value=None):
+            self.assertEqual(t.hint(t.revision)['recommendation']['action']['kind'], 'pass')
+        t.hint_cache = None
+        t.session.decision = Decision(0, 'claim', actions + (Action('hu', offered),), offered, 3)
+        self.assertEqual(t.hint(t.revision)['recommendation']['action']['kind'], 'hu')
+        self.assertEqual(t.session.game.player1, 'human')
+
+
+    def test_1000_points_and_tai_payments_carry_once(self):
+        for tai in range(1, 6):
+            for self_drawn in (False, True):
+                t = Table()
+                self.assertEqual(t.points(), [1000]*4)
+                t.new(seed=7)
+                t.session.game.instant.clear()
+                t.session.is_over = True
+                delta = sg.payouts(tai, 2, self_drawn, 0)
+                result = {'winner': 2, 'total': delta}
+                expected = [1000+delta[p] for p in range(4)]
+                with patch.object(t.session, 'result', return_value=result):
+                    self.assertEqual(t.points(), expected)
+                    self.assertEqual(t.points(), expected)
+                    self.assertEqual(sum(t.points()), 4000)
+                    t.new(seed=3)
+                self.assertEqual(t.balances, expected)
+                self.assertEqual(sum(t.points()), 4000)
+
+
+    def test_instant_payments_are_applied_once_without_a_winner(self):
+        t = Table()
+        t.new(seed=7)
+        t.session.game.instant.clear()
+        t.session.game.instant.update(sg.instant_payment(1, 2))
+        self.assertEqual(t.points(), [998,1006,998,998])
+        self.assertEqual(t.points(), [998,1006,998,998])
+        t.new(seed=3)
+        self.assertEqual(t.balances, [998,1006,998,998])
+
+
     def test_dealer_retains_or_rotates_and_round_advances(self):
         for dealer, winner, expected, round_wind in [(0, 0, 0, 0), (0, 2, 1, 0), (2, None, 2, 0), (3, 1, 0, 1)]:
             table = Table()
             table.new(seed=7)
             table.session.game.dealer = dealer
             table.session.is_over = True
-            with patch.object(table.session, 'result', return_value={'winner': winner}):
+            with patch.object(table.session, 'result', return_value={'winner': winner, 'total': dict.fromkeys(range(4), 0)}):
                 self.assertEqual(table.next_dealer(), expected)
                 table.new(seed=3)
             self.assertEqual(table.session.game.dealer, expected)
@@ -103,7 +161,10 @@ class TableTests(unittest.TestCase):
                 self.assertTrue(any(m["followed"] is False for m in saved["moves"]))
             self.assertEqual(saved["result"]["winner"], table.session.result()["winner"])
             # The saved seed deals the same hand again.
-            again = GameSession(seed=saved["seed"], dealer=saved["dealer"], wind_round=saved["wind_round"]).game
+            again = MahjongGame(dealer=saved["dealer"], wind_round=saved["wind_round"], rand=random.Random(saved["seed"]))
+            again.verbose = False
+            deal_three_dice(again)
+            self.assertEqual(json.loads(json.dumps(again.wall_setup)), saved["setup"])
             self.assertEqual(json.loads(json.dumps([again.sort_tiles(h) for h in again.hands])), saved["start_hands"])
             # A hand abandoned after one move is saved as unfinished; one with no moves is not.
             table.new(seed=12)
@@ -257,7 +318,7 @@ class TableTests(unittest.TestCase):
         worker.start()
         base = f"http://127.0.0.1:{server.server_port}"
         try:
-            for path in ("/", "/app.js", "/style.css", "/tiles.css", "/tiles.webp"):
+            for path in ("/", "/app.js", "/table_scene.js", "/style.css", "/tiles.css", "/tiles.webp", "/arcade.css"):
                 with urlopen(base + path) as response:
                     self.assertEqual(response.status, 200)
                     self.assertTrue(response.read())
