@@ -1,7 +1,7 @@
-"""Tests for the mantai_ml package. Needs torch, opencv, numpy and pillow,
-which the project's mantAI/.venv has (plain python3 skips these tests):
-    mantAI/.venv/bin/python -m pytest test_mantai_ml.py
-Elsewhere, install them first with: pip install -r requirements-ml.txt
+"""Tests for the mantai_ml package. Needs torch and numpy (pip install -r
+requirements.txt); without torch they are skipped. The video tests also need
+opencv and pillow and are skipped without them:
+    python -m pytest test_mantai_ml.py
 """
 import random
 from collections import Counter
@@ -9,7 +9,6 @@ from collections import Counter
 import pytest
 
 torch = pytest.importorskip("torch")
-cv2 = pytest.importorskip("cv2")
 
 import numpy as np
 
@@ -19,9 +18,14 @@ from mantai_ml.features import CALL_SIZE, STATE_SIZE, encode_call_record, encode
 from mantai_ml.recorder import record_games
 from mantai_ml.records import read_records
 from mantai_ml.tiles import ALL_TILES, parse_tile, tile_name
-from mantai_ml.video.detect import DetectParams, detect_tiles
-from mantai_ml.video.reader import VideoConfig, VideoReader, group_melds
-from mantai_ml.video import synth
+try:
+    import cv2
+    from mantai_ml.video.detect import DetectParams, detect_tiles
+    from mantai_ml.video.reader import VideoConfig, VideoReader, group_melds
+    from mantai_ml.video import synth
+except ImportError:         # opencv / pillow are only needed to read game videos
+    cv2 = None
+needs_video = pytest.mark.skipif(cv2 is None, reason="the video tests need opencv and pillow")
 
 
 def B(*r):
@@ -70,6 +74,7 @@ def test_trained_policy_plays_legal_games(sim_records, tmp_path):
     assert stats["errors"] == []
 
 
+@needs_video
 def test_touching_tiles_are_split_at_seams():
     rng = random.Random(0)
     frame = synth.render_frame({"hand": B(1, 2, 3, 4, 5, 6, 7, 8, 9) + B(1, 2, 3, 4, 5),
@@ -80,6 +85,7 @@ def test_touching_tiles_are_split_at_seams():
     assert max(widths) - min(widths) <= 4
 
 
+@needs_video
 def test_group_melds_reads_kongs_and_sets():
     tiles = B(5, 5, 5, 5) + B(1, 2, 3) + [('dragon', 'red')] * 3
     assert group_melds(tiles) == [B(5, 5, 5, 5), B(1, 2, 3), [('dragon', 'red')] * 3]
@@ -90,6 +96,7 @@ class _NoClf:
         return []
 
 
+@needs_video
 def test_reader_turns_pong_then_discard_into_records():
     reader = VideoReader(_NoClf(), VideoConfig(hand_roi=[0, 0, 1, 1]))
     prev = {"hand": B(1, 1, 2, 3, 4, 5, 6, 7, 8, 9) + [('dot', 1), ('dot', 2), ('dot', 5)],
@@ -102,6 +109,7 @@ def test_reader_turns_pong_then_discard_into_records():
     assert len(reader.records[1]["hand"]) + 3 * len(reader.records[1]["melds"]) == 14
 
 
+@needs_video
 def test_video_pipeline_recovers_every_discard(tmp_path):
     from mantai_ml.video.classifier import train_tile_classifier
     from mantai_ml.video.reader import video_to_records
@@ -123,6 +131,7 @@ def _change(*snaps):
     return [(r["kind"], tuple(r["tile"]), r.get("call_type")) for r in reader.records]
 
 
+@needs_video
 def test_reader_records_concealed_kong_then_discard():
     base = {"bonus": [], "visible": [], "time": 0.0}
     before = dict(base, hand=B(1, 1, 1, 1, 2, 3, 4, 5, 6, 7, 8, 9) + [('dot', 1), ('dot', 2)], melds=[])
@@ -132,6 +141,7 @@ def test_reader_records_concealed_kong_then_discard():
                                             ("discard", ('dot', 1), None)]
 
 
+@needs_video
 def test_reader_does_not_mistake_promoted_kong_for_discard():
     base = {"bonus": [], "visible": [], "time": 0.0}
     seven = ('dot', 7)
@@ -140,6 +150,7 @@ def test_reader_does_not_mistake_promoted_kong_for_discard():
     assert _change(before, kong) == [("call", seven, "self_kong")]
 
 
+@needs_video
 def test_unreadable_meld_region_skips_the_frame(monkeypatch):
     from mantai_ml.video import reader as reader_mod
     cfg = VideoConfig(hand_roi=[0, 0, 1, 0.5], meld_roi=[0, 0.5, 1, 0.5])
@@ -150,6 +161,7 @@ def test_unreadable_meld_region_skips_the_frame(monkeypatch):
     assert snap is None and reader.skipped["low confidence melds"] == 1
 
 
+@needs_video
 def test_synthetic_video_leaves_simulator_rng_alone():
     before = sim.rng
     synth.simulated_snapshots(seed=2)
