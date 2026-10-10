@@ -178,6 +178,40 @@ def test_discard_quality_removes_only_one_copy():
     assert result["waits_after"] == D(9)
 
 
+def test_two_step_lookahead_keeps_drawn_tiles_in_hand_and_discards_visible(monkeypatch):
+    import Decision_Strategy_engine as de
+    initial = B(1, 2, 3, 4, 5) + D(4, 5, 6) + W(7, 8, 9) + [('wind', 'east'), ('dragon', 'red')]
+    known = Counter(initial)
+    original = de.ukeire
+    checked = []
+    def checking(hand, melds, visible, current_shanten=None):
+        if len(visible):
+            combined = Counter(hand) + Counter(visible)
+            extra = combined - known
+            assert sum(extra.values()) == 1
+            assert not (known - combined)
+            checked.append(combined)
+        return original(hand, melds, visible, current_shanten)
+    monkeypatch.setattr(de, 'ukeire', checking)
+    de.StrategyEngine().second_order_ukeire(initial, [], [])
+    assert checked
+
+
+def test_pong_evaluation_keeps_exposed_copies_visible(monkeypatch):
+    import Decision_Strategy_engine as de
+    tile = ('dragon', 'red')
+    hand = B(1, 2, 3, 4) + D(4, 5, 6) + W(7, 8, 9, 2) + [tile, tile]
+    visible = [tile]
+    expected = Counter(hand) + Counter(visible)
+    engine = de.StrategyEngine()
+    def evaluate(after, melds, after_visible, *args):
+        assert Counter(after) + Counter(after_visible) == expected
+        return {'shanten': 1, 'ukeire': 8, 'tile': after[0]}
+    monkeypatch.setattr(engine, '_current_value', lambda *args: (2, 4))
+    monkeypatch.setattr(engine, '_best_after_call', evaluate)
+    assert engine.should_pong(hand, [], tile, visible).action == 'pong'
+
+
 # --------------------------------------------------------------------------
 # Simulator: dealing, randomness and meld accounting
 # --------------------------------------------------------------------------

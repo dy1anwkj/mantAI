@@ -92,3 +92,18 @@ tile-conservation checks. An evaluation with errors exits unsuccessfully.
 
 New experiment checkpoints are local, gitignored artifacts. They must be copied
 or retrained before these commands can be used on another machine.
+
+## Subsequent correctness audit
+
+The later project audit corrected tile accounting in hypothetical discards,
+two-step lookahead, and claims. A discarded tile stays visible; tiles exposed
+by a claim stay known; a simulated drawn tile stays in the hand unless it is
+discarded. For example, discarding one tile from a pair leaves at most two
+unseen copies of that tile, not three. Chi feature selection now prefers more
+improving tiles when shanten is equal. Training also rejects invalid epoch,
+batch-size, and validation-split settings, and a zero validation fraction is
+honored.
+
+The evaluation tables above were measured before these accounting fixes.
+They remain historical results; playing-strength benchmarks must be rerun
+before attributing the same figures to the corrected decision code.

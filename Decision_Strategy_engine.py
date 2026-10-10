@@ -464,20 +464,21 @@ class StrategyEngine:
         for tile in sorted(set(hand), key=tile_sort_key):
             remaining = list(hand)
             remaining.remove(tile)          # remove ONE copy only
+            after_visible = list(visible_tiles) + [tile]
 
             s = shanten(remaining, melds)
             if s == 0 and tai_ctx is not None:
                 # Ready: only waits that reach the minimum tai count.
                 good = scoring_waits(remaining, melds, tai_ctx)
-                unseen = unseen_counts(remaining, visible_tiles)
+                unseen = unseen_counts(remaining, after_visible)
                 improving = {w: unseen[w] for w in good if unseen[w]}
                 uk = sum(improving.values())
                 if not good:
                     s = self.w["no_tai_ready"]
-                    uk, improving = ukeire(remaining, melds, visible_tiles, 0)
+                    uk, improving = ukeire(remaining, melds, after_visible, 0)
                     uk = 0
             else:
-                uk, improving = ukeire(remaining, melds, visible_tiles, s)
+                uk, improving = ukeire(remaining, melds, after_visible, s)
             potential = tai_potential(remaining, melds, tai_ctx)
             structure = hand_structure_score(remaining)
             danger = self.danger_fn(tile, hand, visible_tiles)
@@ -537,10 +538,10 @@ class StrategyEngine:
                 if s2 >= s:
                     continue
                 if s2 == 0 and tai_ctx is not None:
-                    unseen = unseen_counts(rest, visible_tiles + [tile])
+                    unseen = unseen_counts(rest, list(visible_tiles) + [d])
                     uk2 = sum(unseen[w] for w in scoring_waits(rest, melds, tai_ctx))
                 else:
-                    uk2, _ = ukeire(rest, melds, visible_tiles + [tile], s2)
+                    uk2, _ = ukeire(rest, melds, list(visible_tiles) + [d], s2)
                 best_uk = max(best_uk, uk2)
             total += copies * best_uk
         return total
@@ -555,7 +556,7 @@ class StrategyEngine:
                 for r in head:
                     rest = list(hand)
                     rest.remove(r["tile"])
-                    r["ukeire2"] = self.second_order_ukeire(rest, melds or [], list(visible_tiles or []), tai_ctx)
+                    r["ukeire2"] = self.second_order_ukeire(rest, melds or [], list(visible_tiles or []) + [r["tile"]], tai_ctx)
                     r["score"] = round(r["score"] + self.w["ukeire2"] * r["ukeire2"], 2)
                 head.sort(key=lambda r: r["score"], reverse=True)
                 ranked = head + [r for r in ranked if r not in head]
@@ -597,7 +598,7 @@ class StrategyEngine:
         after = list(hand)
         after.remove(tile); after.remove(tile)
         new_melds = melds + [[tile] * 3]
-        best = self._best_after_call(after, new_melds, visible_tiles, threat, tai_ctx)
+        best = self._best_after_call(after, new_melds, list(visible_tiles) + [tile, tile], threat, tai_ctx)
 
         scoring = tai_ctx.scoring_honours() if tai_ctx else {t for t in ALL_TILE_TYPES if t[0] == "dragon"}
         bonus = self.w["honor_pong_bonus"] if tile in scoring else 0.0
@@ -642,7 +643,7 @@ class StrategyEngine:
             for t in pair:
                 after.remove(t)
             new_melds = melds + [sorted([tile] + pair, key=tile_sort_key)]
-            result = self._best_after_call(after, new_melds, visible_tiles, threat, tai_ctx)
+            result = self._best_after_call(after, new_melds, list(visible_tiles) + list(pair), threat, tai_ctx)
             if best_result is None or result["score"] > best_result["score"]:
                 best_option, best_result = pair, result
 

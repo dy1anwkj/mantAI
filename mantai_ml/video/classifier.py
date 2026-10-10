@@ -89,6 +89,8 @@ def augment(x):
 
 def train_tile_classifier(dataset_dir, out_path, epochs=25, batch_size=64, lr=2e-3,
                           val_fraction=0.15, seed=0, device=None, log=print):
+    if epochs < 1 or batch_size < 1 or not 0 <= val_fraction < 1:
+        raise ValueError("epochs and batch_size must be positive; val_fraction must be in [0, 1)")
     random.seed(seed)
     torch.manual_seed(seed)
     device = pick_device(device)

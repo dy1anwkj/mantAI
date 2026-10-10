@@ -7,6 +7,12 @@ discard and claim recommendations. A learned policy, statistical hand analysis,
 decision engines, and search over possible hidden deals support its decisions.
 Performance against real humans has not yet been measured.
 
+Singapore Mahjong requires balancing hand improvement, scoring potential, and
+the risk of giving an opponent a winning tile. mantAI turns those tradeoffs into
+an actionable recommendation, using only your concealed hand and public table
+information. The browser is a playable demonstration and a way to review the
+AI's decisions.
+
 The included default now uses the improved learned discard policy with
 strategy-engine calls and its matching value model. It was trained with
 engine examples and reinforcement learning against varied opponents.
@@ -29,6 +35,18 @@ python web_game.py
 Open **http://127.0.0.1:8000** and select **Play**. The trained models are
 included in `models/`, so there is nothing to train first. Without PyTorch the
 game still runs, with the strategy engine making the recommendations.
+
+## Try the demo
+
+1. Select **Play** and watch the three-dice wall break and dealing sequence.
+2. Read the recommended discard, estimated win chance, and candidate search
+   scores. Click a tile to play; opponents respond automatically.
+3. When a claim is offered, follow the highlighted Chi, Pong, Kong, Hu, or Pass
+   recommendation. Finish a hand to see tai, payments, and updated balances.
+
+Recommendations can take several seconds to calculate. **Options** controls
+action pacing and whether recommendations are displayed. No API key or external
+AI service is required; the models run locally.
 
 ## What you see
 
@@ -61,8 +79,18 @@ More detail on the web game: [docs/WEB_GAME.md](docs/WEB_GAME.md).
 
 ## How it decides
 
-mantAI follows the recipe AlphaGo used, adapted to a game with hidden tiles
+mantAI combines policy and value networks with search, inspired by AlphaGo and
+adapted to a game with hidden tiles
 ([mantai_ml/search.py](mantai_ml/search.py)):
+
+```mermaid
+flowchart LR
+    A[Your hand and public table] --> B[Learned policy and strategy engine]
+    B --> C[Candidate discards]
+    C --> D[Simulate possible hidden deals]
+    D --> E[Points won and value estimates]
+    E --> F[Recommended discard and explanation]
+```
 
 1. **Policy network.** Starts with hand analysis and strategy features encoded
    from the study library ([mantai_ml/knowledge.py](mantai_ml/knowledge.py)),
@@ -87,7 +115,11 @@ is a noisy estimate from simulations; the search compares expected points.
 
 ## Results
 
-The latest comparison used **5,000 identical starting deals per policy** against
+**These results were measured before the latest tile-accounting fixes.** They
+document the model's training improvement; playing-strength tests must be rerun
+to measure the corrected decision code.
+
+The recorded comparison used **5,000 identical starting deals per policy** against
 human-style engine opponents, with rule checks enabled. These are policy results
 **without search**; one scoring unit equals one point.
 
@@ -188,3 +220,11 @@ python -m pytest
 The video tests additionally need `opencv-python` and `pillow`. Without PyTorch,
 the ML tests are skipped. Wall setup and browser integration checks are in
 `tests/test_wall_setup.py` and `tests/test_web_game.py`.
+
+The latest audit passed 256 full-suite tests, then 86 affected-path tests after
+the final fixes. Coverage includes winning shapes, scoring, tile conservation,
+legal actions, model training, physical dealing, and HTTP integration.
+
+The audit fixed unseen-tile counts after discards and claims, two-step lookahead
+accounting, Chi option selection at equal shanten, and invalid training settings.
+Details are in [the correctness audit](docs/TRAINING_IMPROVEMENTS.md#subsequent-correctness-audit).

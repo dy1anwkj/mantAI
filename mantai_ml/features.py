@@ -56,16 +56,17 @@ def discard_analysis(hand, melds, visible, ctx):
             continue
         rest = list(hand)
         rest.remove(tile)
+        after_visible = list(visible) + [tile]
         s = de.shanten(rest, melds)
         if s == 0:
             good = de.scoring_waits(rest, melds, ctx)
-            unseen = de.unseen_counts(rest, visible)
+            unseen = de.unseen_counts(rest, after_visible)
             u = sum(unseen[w] for w in good)
             ready[i] = 1.0 if good else 0.0
             if not good:
                 s, u = 1, 0
         else:
-            u, _ = de.ukeire(rest, melds, visible, s)
+            u, _ = de.ukeire(rest, melds, after_visible, s)
         sh[i] = min(max(s, 0), 8) / 8.0
         uk[i] = min(u, 60) / 60.0
     return np.concatenate([sh, uk, ready])
@@ -155,7 +156,8 @@ def call_analysis(hand, melds, visible, bonus, seat, prevailing, tile, call_type
                 after_melds = melds
             else:
                 return np.array([s0 / 8, min(u0, 60) / 60, 1, 0, 0], dtype=np.float32)
-            s1, u1 = _engine._current_value(after_hand, after_melds, visible, ctx)
+            after_visible = visible + [tile] * (len(hand) - len(after_hand))
+            s1, u1 = _engine._current_value(after_hand, after_melds, after_visible, ctx)
         else:
             s0, u0 = _engine._current_value(hand, melds, visible, ctx)
             if call_type == "chi":
@@ -172,12 +174,13 @@ def call_analysis(hand, melds, visible, bonus, seat, prevailing, tile, call_type
                 after = list(hand)
                 for t in used:
                     after.remove(t)
+                after_visible = visible + used
                 if call_type == "kong":
-                    r = _engine._current_value(after, melds + [meld], visible, ctx)
+                    r = _engine._current_value(after, melds + [meld], after_visible, ctx)
                 else:
-                    top = _engine.evaluate_discards(after, melds + [meld], visible, 0.0, ctx)[0]
+                    top = _engine.evaluate_discards(after, melds + [meld], after_visible, 0.0, ctx)[0]
                     r = (top["shanten"], top["ukeire"])
-                if best is None or r < best:
+                if best is None or (r[0], -r[1]) < (best[0], -best[1]):
                     best = r
             s1, u1 = best
     except (ValueError, IndexError):

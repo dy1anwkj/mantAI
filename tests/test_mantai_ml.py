@@ -473,3 +473,40 @@ def test_engine_call_mode_survives_save_and_numpy_conversion(tmp_path, monkeypat
     policy = SamplingPolicy(_numpy_weights(restored), random.Random(0))
     assert policy.should_call(game, 0, ('dot', 1), 'pong')
     assert not policy.calls
+
+
+@pytest.mark.parametrize("public_copies", [0, 1, 2])
+def test_discarded_copy_is_not_counted_as_an_unseen_winning_tile(public_copies):
+    import Decision_Strategy_engine as de
+    from mantai_ml.features import discard_analysis, N
+    from mantai_ml.tiles import TILE_INDEX
+    hand = B(1, 2, 3) + D(4, 5, 6) + W(7, 8, 9, 2, 2, 2) + D(9, 9)
+    visible = D(*([9] * public_copies))
+    ctx = de.TaiContext(bonus=[('animal', 'cat')])
+    candidate = next(r for r in de.StrategyEngine().evaluate_discards(hand, visible_tiles=visible, tai_ctx=ctx)
+                     if r['tile'] == ('dot', 9))
+    assert candidate['ukeire'] == 2 - public_copies
+    features = discard_analysis(hand, [], visible, ctx)
+    assert features[N + TILE_INDEX[('dot', 9)]] == pytest.approx((2-public_copies)/60)
+
+
+def test_zero_validation_fraction_keeps_all_games_in_training():
+    from mantai_ml.train import _split_decisions
+    dt, dv, ct, cv = _split_decisions({'a': [1], 'b': [2]}, {'b': [3]}, 0, random.Random(0))
+    assert sorted(dt) == [1, 2] and ct == [3]
+    assert dv == cv == []
+
+
+def test_call_features_choose_more_improving_tiles_at_equal_shanten(monkeypatch):
+    import mantai_ml.features as features
+    monkeypatch.setattr(features._engine, '_current_value', lambda *args: (2, 10))
+    monkeypatch.setattr(features._engine, 'chi_options', lambda *args: [B(2, 3), B(5, 6)])
+    hand = B(2, 3, 5, 6) + D(1, 2, 3, 4, 5, 6) + W(1, 1, 1)
+    before = Counter(hand) + Counter(B(4))
+    def evaluate(after, melds, visible, *args):
+        assert Counter(after) + Counter(visible) == before
+        return [{'shanten': 1, 'ukeire': 24 if ('bamboo', 2) in after else 12}]
+    monkeypatch.setattr(features._engine, 'evaluate_discards', evaluate)
+    result = features.call_analysis(hand, [], B(4), [], 1, 'east', ('bamboo', 4), 'chi')
+    assert result[2] == pytest.approx(1/8)
+    assert result[3] == pytest.approx(24/60)

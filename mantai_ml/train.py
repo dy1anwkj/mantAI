@@ -55,9 +55,11 @@ def _tensors(rows, device):
 
 def _split_decisions(discards, calls, val_fraction, rng):
     """Keep every decision from a game on the same side of the split."""
+    if not 0 <= val_fraction < 1:
+        raise ValueError("val_fraction must be between 0 (inclusive) and 1 (exclusive)")
     ids = sorted(set(discards) | set(calls))
     rng.shuffle(ids)
-    n_val = max(1, int(len(ids) * val_fraction)) if len(ids) > 1 else 0
+    n_val = max(1, int(len(ids) * val_fraction)) if len(ids) > 1 and val_fraction > 0 else 0
     validation = set(ids[:n_val])
     def partition(groups):
         return ([row for gid, rows in groups.items() if gid not in validation for row in rows],
@@ -69,6 +71,8 @@ def train(paths, out_path, epochs=15, batch_size=256, lr=1e-3, hidden=256,
           controllers=None, winners_only=False, win_weight=2.0,
           val_fraction=0.1, seed=0, device=None, log=print, init=None):
     rng = random.Random(seed)
+    if epochs < 1 or batch_size < 1:
+        raise ValueError("epochs and batch_size must be positive")
     torch.manual_seed(seed)
     device = pick_device(device)
 
