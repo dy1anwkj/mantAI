@@ -21,6 +21,14 @@ is 3 Fan, Small Four Winds total is 4, and its default payout ladder starts at
 [focused hands URL](https://singaporemahjongrules.com/singapore-mahjong-winning-hands/)
 could not be fetched; this review uses the accessible main guide.
 
+[Seedly's guide](https://blog.seedly.sg/mahjong-probability-guide-singapore/)
+was also reviewed. It is by Ming Feng, dated February 8, 2024, and overlaps
+substantially with the AsiaOne article, which credits Seedly as its original
+source. Treat these as related versions rather than independent evidence.
+Its table likewise lists Small Three Dragons as 3 tai and Small Four Winds
+as 2 tai. Its “All Pongs or All Pairs” label is not sufficient justification
+for enabling a separate Seven Pairs winning shape in mantAI.
+
 mantAI currently uses SPGG 2024 as the stated tie-breaker between rule sources.
 Its Small Three Dragons total is 4 tai, Small Four Winds is capped at 5, and
 its 1-tai base payout is 1 point. Those differences need a deliberate ruleset
