@@ -580,3 +580,16 @@ def test_selfplay_keeps_starting_policy_when_update_is_worse(tmp_path, monkeypat
     final, _ = load_model(output)
     assert metrics['test_units'] == 5 and metrics['selection'] == 'starting policy'
     assert not torch.equal(next(best.parameters()), next(final.parameters()))
+
+
+def test_engine_teacher_labels_states_visited_by_the_model(tmp_path):
+    from mantai_ml.recorder import record_games
+    output = tmp_path / 'teacher.jsonl'
+    count, stats = record_games(4, str(output), player1='ml', model_path=_tiny_model(tmp_path),
+                               teacher=True, seed=37, progress=False)
+    assert count > 0 and stats['errors'] == []
+    records = list(read_records(str(output)))
+    assert all(r['controller'] == 'engine_teacher' for r in records)
+    discards = [r for r in records if r['kind'] == 'discard']
+    assert all(r['tile'] in r['hand'] and tuple(r['behavior_tile']) in r['hand'] for r in discards)
+    assert any(r['tile'] != tuple(r['behavior_tile']) for r in discards)

@@ -38,7 +38,8 @@ def _ensure_dir(path):
 def cmd_record(a):
     from .recorder import record_games
     _ensure_dir(a.out)
-    n, stats = record_games(a.games, a.out, player1=a.player1, seed=a.seed)
+    n, stats = record_games(a.games, a.out, player1=a.player1, seed=a.seed,
+                           model_path=a.model, teacher=a.teacher)
     print(f"Wrote {n} decisions from {a.games} games to {a.out} "
           f"(Player 1 won {stats['p1_wins']} games)")
 
@@ -143,6 +144,9 @@ def main(argv=None):
     s.add_argument("--games", type=int, default=1000)
     s.add_argument("--out", default="data/sim.jsonl")
     s.add_argument("--player1", default="engine", choices=["engine", "ml"])
+    s.add_argument("--model", default="models/alpha_best.pt", help="policy to play when --player1 ml")
+    s.add_argument("--teacher", action="store_true",
+                   help="label visited states with engine advice while retaining the moves actually played")
     s.add_argument("--seed", type=int)
     s.set_defaults(func=cmd_record)
 

@@ -13,12 +13,13 @@ class GameRecorder:
               is the teacher when recording with player1="engine".
     """
 
-    def __init__(self, players=(0,), source="sim"):
+    def __init__(self, players=(0,), source="sim", teacher=False):
         self.players = set(players)
         self.source = source
         self.records = []
         self._current = []
         self.game_id = None
+        self.teacher = teacher
 
     def on_decision(self, game, player, kind, tile, call_type=None, taken=None):
         if player not in self.players:
@@ -42,6 +43,17 @@ class GameRecorder:
         if kind == "call":
             r["call_type"] = call_type
             r["taken"] = taken
+        if self.teacher:
+            from Decision_Strategy_engine import engine_discard_decision, engine_should_call
+            engine = game.strategy if player == 0 else game.opponent_engines[player]
+            r["behavior_controller"] = r["controller"]
+            r["controller"] = "engine_teacher"
+            if kind == "discard":
+                r["behavior_tile"] = r["tile"]
+                r["tile"] = list(engine_discard_decision(game, player, engine).tile)
+            elif call_type in ("pong", "chi", "kong", "self_kong"):
+                r["behavior_taken"] = taken
+                r["taken"] = engine_should_call(game, player, tile, call_type, engine)
         self._current.append(r)
 
     def on_game_end(self, game):
@@ -59,16 +71,27 @@ class GameRecorder:
         self.game_id = None
 
 
-def record_games(n_games, out_path, player1="engine", players=(0,), seed=None, progress=True):
+def record_games(n_games, out_path, player1="engine", players=(0,), seed=None, progress=True,
+                 model_path=None, teacher=False):
     """Play n_games in the simulator and write every decision to out_path."""
     import mahjong_simulator as sim
 
-    recorder = GameRecorder(players)
+    if player1 == "ml" and model_path is None:
+        raise ValueError("A model_path is required when recording an ML player")
+    policy = None
+    if player1 == "ml":
+        from .ml_player import MLPolicy
+        policy = MLPolicy(model_path)
+    recorder = GameRecorder(players, teacher=teacher)
 
     def setup(game):
         game.recorder = recorder
+        if policy is not None:
+            game.ml_policy = policy
 
     stats = sim.simulate(n_games, seed=seed, check=True, progress=progress,
                          player1=player1, setup=setup)
+    if stats["errors"]:
+        raise RuntimeError("Recording failed; refusing to write incomplete training data: " + stats["errors"][0])
     write_records(out_path, recorder.records, append=False)
     return len(recorder.records), stats

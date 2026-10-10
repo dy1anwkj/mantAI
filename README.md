@@ -193,6 +193,16 @@ and 500 separate validation games. Held-out value prediction RMSE decreased
 from **9.168 to 8.456 scoring units** (about 7.8%). This measures prediction error,
 not a demonstrated increase in search win rate. See [calibration metrics](docs/value_calibration.json).
 
+To teach the learner on states reached by its own moves, record model-played
+games with engine labels, then fine-tune. Records retain both the actual move
+and the teacher's recommendation. Use equal game weights because outcomes belong
+to the learner's played moves, not the teacher's hypothetical alternatives:
+
+```bash
+python -m mantai_ml record --player1 ml --model models/alpha_best.pt --teacher --games 2000 --out data/visited.jsonl
+python -m mantai_ml train --init models/alpha_best.pt --data data/visited.jsonl --win-weight 1 --out models/visited.pt
+```
+
 ```bash
 # Self-play from the book-based starting point
 python -m mantai_ml selfplay --iterations 1200 --games 400 --shaping 0 --out models/alpha.pt
