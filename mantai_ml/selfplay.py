@@ -272,6 +272,11 @@ def selfplay(out_path, iterations=150, games_per_iter=400, hidden=256, lr=3e-4,
 
     from .model import PolicyNet, load_model, save_model
 
+    if min(iterations, games_per_iter, eval_every, eval_games, ppo_epochs, batch_size, start_iter) < 1:
+        raise ValueError("iterations, games, evaluation intervals, epochs and batch sizes must be positive")
+    if workers is not None and workers < 1:
+        raise ValueError("workers must be positive")
+
     torch.manual_seed(seed)
     if init:
         net, _ = load_model(init)
@@ -304,6 +309,27 @@ def selfplay(out_path, iterations=150, games_per_iter=400, hidden=256, lr=3e-4,
     history = []
     frozen_opponents = [_numpy_weights(load_model(path)[0]) for path in opponent_models]
     with ProcessPoolExecutor(max_workers=workers) as pool:
+        def evaluate_current():
+            eval_seeds = [10 ** 9 + i for i in range(eval_games)]
+            ev = []
+            for _, _, rows in pool.map(play_games, [_numpy_weights(net)] * workers,
+                                      [eval_seeds[i::workers] for i in range(workers)],
+                                      [True] * workers):
+                ev += rows
+            return ev
+
+        # The starting policy is a candidate too. A continuation run must
+        # not label a weaker learned checkpoint "best" just because it is new.
+        net.eval()
+        initial = evaluate_current()
+        best_units = sum(g["units"] for g in initial) / len(initial)
+        initial_win = 100.0 * sum(g["won"] for g in initial) / len(initial)
+        save_model(best_path, net, {"selfplay_iterations": start_iter - 1,
+                                   "test_units": best_units, "test_win": initial_win,
+                                   "history": [], "selection": "starting policy"})
+        torch.save(critic.state_dict(), best_critic_path)
+        log(f"Starting policy on {len(initial)} selection games: {best_units:+.2f} units/game, "
+            f"win {initial_win:.1f}%")
         for it in range(start_iter, start_iter + iterations):
             beta = shaping * max(0.0, 1.0 - (it - 1) / shaping_iters) if shaping_iters else 0.0
             net.eval()
@@ -344,12 +370,7 @@ def selfplay(out_path, iterations=150, games_per_iter=400, hidden=256, lr=3e-4,
             if it % eval_every == 0 or it == start_iter + iterations - 1:
                 # Greedy play on the same fresh deals every time: how strong
                 # the model is right now, comparable from one test to the next.
-                eval_seeds = [10 ** 9 + i for i in range(eval_games)]
-                ev = []
-                for _, _, g in pool.map(play_games, [_numpy_weights(net)] * workers,
-                                        [eval_seeds[i::workers] for i in range(workers)],
-                                        [True] * workers):
-                    ev += g
+                ev = evaluate_current()
                 units = sum(g["units"] for g in ev) / len(ev)
                 win = 100.0 * sum(g["won"] for g in ev) / len(ev)
                 meta = {"selfplay_iterations": it, "test_units": units, "test_win": win,

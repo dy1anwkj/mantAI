@@ -173,6 +173,8 @@ By default the command trains the learned player against three strategy-engine
 opponents. `--opponent-models` mixes frozen learned policies and the current
 policy with engine opponents; only Player 1's policy is updated. `--engine-calls`
 keeps claims under the strategy engine while learning discards.
+Self-play evaluates the starting policy on the checkpoint-selection deals and
+keeps it as the best checkpoint if all subsequent updates score worse.
 `--games` is the number of games **per iteration**; total training games are
 `--iterations × --games`. Evaluation games are additional.
 Supervised training retains the epoch with the best held-out discard agreement;

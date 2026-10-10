@@ -545,3 +545,38 @@ def test_value_training_preserves_policy_and_retains_best_critic(tmp_path):
     assert out.exists() and _load_critic(str(out)) is not None
     after = load_model(path)[0].state_dict()
     assert all(torch.equal(before[k], after[k]) for k in before)
+
+
+def test_selfplay_keeps_starting_policy_when_update_is_worse(tmp_path, monkeypatch):
+    import concurrent.futures
+    import mantai_ml.selfplay as learning
+    from mantai_ml.features import STATE_SIZE
+    from mantai_ml.model import load_model
+    class Pool:
+        evaluations = 0
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def map(self, fn, *iterables):
+            for args in zip(*iterables):
+                if len(args) >= 3 and args[2]:
+                    self.evaluations += 1
+                    yield [], [], [{'units': 5 if self.evaluations == 1 else 1, 'won': True}]
+                else:
+                    x = np.zeros(STATE_SIZE, dtype=np.float32)
+                    mask = np.ones(34, dtype=np.float32)
+                    yield [(x, mask, 0, 0, 0)], [], [dict(units=0, won=False, shooter=False,
+                                                       discards=1, best_progress=0)]
+    def update(net, *args, **kwargs):
+        with torch.no_grad():
+            next(net.parameters()).add_(1)
+        return 0.0
+    monkeypatch.setattr(concurrent.futures, 'ProcessPoolExecutor', Pool)
+    monkeypatch.setattr(learning, '_ppo_update', update)
+    output = tmp_path / 'policy.pt'
+    learning.selfplay(str(output), iterations=1, games_per_iter=1, hidden=16,
+                      workers=1, eval_games=1, eval_every=1, log=lambda *_: None)
+    best, metrics = load_model(tmp_path / 'policy_best.pt')
+    final, _ = load_model(output)
+    assert metrics['test_units'] == 5 and metrics['selection'] == 'starting policy'
+    assert not torch.equal(next(best.parameters()), next(final.parameters()))
