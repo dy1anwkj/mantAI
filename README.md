@@ -188,6 +188,11 @@ the previous critic if it performs better:
 python -m mantai_ml train-value --model models/alpha_best.pt --games 2000 --val-games 500 --epochs 20
 ```
 
+The included critic has been recalibrated on 2,000 engine-played training games
+and 500 separate validation games. Held-out value prediction RMSE decreased
+from **9.168 to 8.456 scoring units** (about 7.8%). This measures prediction error,
+not a demonstrated increase in search win rate. See [calibration metrics](docs/value_calibration.json).
+
 ```bash
 # Self-play from the book-based starting point
 python -m mantai_ml selfplay --iterations 1200 --games 400 --shaping 0 --out models/alpha.pt

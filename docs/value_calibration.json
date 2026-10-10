@@ -1,0 +1,95 @@
+{
+  "seed": 20261021,
+  "training_games": 2000,
+  "validation_games": 500,
+  "training_positions": 24356,
+  "validation_positions": 6125,
+  "baseline_rmse": 9.16818261760561,
+  "selected_rmse": 8.456214326161588,
+  "selected_epoch": 8,
+  "baseline": "previous critic",
+  "improved": true,
+  "history": [
+    {
+      "epoch": 1,
+      "validation_rmse": 9.000434441147524
+    },
+    {
+      "epoch": 2,
+      "validation_rmse": 8.90342180286909
+    },
+    {
+      "epoch": 3,
+      "validation_rmse": 8.730653137034981
+    },
+    {
+      "epoch": 4,
+      "validation_rmse": 8.608791878505478
+    },
+    {
+      "epoch": 5,
+      "validation_rmse": 8.59498748192533
+    },
+    {
+      "epoch": 6,
+      "validation_rmse": 8.550222686187679
+    },
+    {
+      "epoch": 7,
+      "validation_rmse": 8.47669390739157
+    },
+    {
+      "epoch": 8,
+      "validation_rmse": 8.456214326161588
+    },
+    {
+      "epoch": 9,
+      "validation_rmse": 8.458631488324423
+    },
+    {
+      "epoch": 10,
+      "validation_rmse": 8.486749980524559
+    },
+    {
+      "epoch": 11,
+      "validation_rmse": 8.498366703861441
+    },
+    {
+      "epoch": 12,
+      "validation_rmse": 8.521276436051666
+    },
+    {
+      "epoch": 13,
+      "validation_rmse": 8.529761774955968
+    },
+    {
+      "epoch": 14,
+      "validation_rmse": 8.550793295303302
+    },
+    {
+      "epoch": 15,
+      "validation_rmse": 8.674750983542113
+    },
+    {
+      "epoch": 16,
+      "validation_rmse": 8.68223620883108
+    },
+    {
+      "epoch": 17,
+      "validation_rmse": 8.671209856248074
+    },
+    {
+      "epoch": 18,
+      "validation_rmse": 8.774621382584826
+    },
+    {
+      "epoch": 19,
+      "validation_rmse": 8.781721326457951
+    },
+    {
+      "epoch": 20,
+      "validation_rmse": 8.8696070659525
+    }
+  ],
+  "saved": true
+}
