@@ -14,9 +14,19 @@ dialog{background:#123f2a;color:#fff6dc;border:5px solid #efb459;border-radius:2
 @media(max-width:1000px){.table{min-width:880px;grid-template-columns:120px minmax(500px,1fr) 120px;padding:14px 10px;min-height:760px}.hand .photo-tile{width:34px;height:52px}.toolbar button{font-size:11px;padding:8px}.lobby-subtitle{text-align:center;padding:0 12px}.numbered-stack{width:24px;height:28px}.setup-stacks{gap:2px}dialog{padding:16px}}
 @media(prefers-reduced-motion:reduce){.die{animation:none}}
 /* Keep the opposite player's rack and exposed tiles inside its allotted seat. */
-.seat-top{grid-template-rows:30px 18px 24px 55px;max-height:none;overflow:visible;align-self:start}.seat-top .public-tiles{max-height:none;overflow:visible;align-self:start}.seat-top .photo-tile.mini{width:24px;height:34px}.seat-top .wall-rack{margin:2px auto}.seat-top .backs{margin:0 auto}.game-logo span{font-family:Impact,'Arial Black',sans-serif;font-weight:900}.numbered-stack{background:linear-gradient(#233573 0 70%,#e3e9db 71% 76%,#1f2d65 77%);padding-bottom:5px}
+.seat-top{grid-template-rows:auto auto auto auto;max-height:none;overflow:visible;align-self:start}.seat-top .public-tiles{max-height:none;overflow:visible;align-self:start}.seat-top .photo-tile.mini{width:24px;height:34px}.seat-top .wall-rack{margin:2px auto}.seat-top .backs{margin:0 auto}.game-logo span{font-family:Impact,'Arial Black',sans-serif;font-weight:900}.numbered-stack{background:linear-gradient(#233573 0 70%,#e3e9db 71% 76%,#1f2d65 77%);padding-bottom:5px}
 /* Four connected physical walls enclose the central playing field. */
-.table{grid-template-rows:115px minmax(405px,1fr) 220px;min-height:840px}
+.table{
+  grid-template-rows:auto minmax(405px,1fr) auto;
+  height:auto;
+  min-height:max(840px,calc(100vh - 90px));
+  row-gap:18px;
+}
+.center{align-self:start;gap:8px}
+.center #result{display:flex;flex-wrap:wrap;justify-content:center;gap:6px;margin-top:6px}
+.center #result>p{flex-basis:100%}
+.center #result .score{margin:0}
+.your-area{align-self:start}
 #playing-field{position:relative;width:100%;height:370px;min-height:370px;background:#08633255;border-radius:12px}
 #field-walls{position:absolute;inset:0;pointer-events:none;z-index:4}
 .field-wall{position:absolute;display:flex;gap:2px;pointer-events:auto;align-items:center;justify-content:center}
@@ -32,6 +42,6 @@ dialog{background:#123f2a;color:#fff6dc;border:5px solid #efb459;border-radius:2
 #opening{position:absolute;inset:44px 40px 40px;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:5;text-align:center}#opening[hidden]{display:none}#throw-dice{display:flex;gap:18px;justify-content:center;min-height:80px;align-items:center}.thrown-die{display:inline-flex;align-items:center;justify-content:center;font:70px 'Segoe UI Symbol',sans-serif;color:#fffdf0;text-shadow:2px 5px #122251;position:relative}#opening-message{font-size:14px;max-width:570px;color:#fff1c5;margin:12px 0}#opening-counts{font-size:11px;color:#cde7d5;min-height:20px}.opening-scene #discard-river,.opening-scene #pending{visibility:hidden}.opening-scene #recommendation,.opening-scene #actions{visibility:hidden}.counting-seat{outline:2px solid #fbd168;border-radius:12px}.counted-stack{outline:2px solid #e6d170;background:#9b7d2b}
 .flying-tile{position:fixed;width:22px;height:31px;background:linear-gradient(#253578 0 85%,#ece5cd 86%);border:1px solid #bac6d1;border-radius:3px;z-index:1000;pointer-events:none;box-shadow:2px 3px #07173677}.replacement-flight{outline:2px solid #ff96cb}
 #hand,.backs{min-height:28px}.opening-scene #hand .back{height:45px;width:30px}
-@media(max-width:1000px){.table{grid-template-rows:115px minmax(405px,1fr) 220px;min-height:840px}#opening-message{font-size:12px}.thrown-die{font-size:56px}.wall-legend{gap:7px;font-size:8px!important}}
+@media(max-width:1000px){#opening-message{font-size:12px}.thrown-die{font-size:56px}.wall-legend{gap:7px;font-size:8px!important}}
 .wall-top .field-stack,.wall-bottom .field-stack{max-width:none}.wall-left .field-stack,.wall-right .field-stack{max-height:none}
 .points-badge{display:inline-block;color:#ffe288;font-weight:bold;font-size:13px;margin:4px 0;background:#10274a66;border:1px solid #c6b66a77;border-radius:8px;padding:4px 8px}.hand-title .points-badge{white-space:nowrap;color:#ffe288}.seat-top .points-badge{grid-column:1;grid-row:4;align-self:start;font-size:11px;margin:0}.seat-top .public-tiles{grid-column:2;grid-row:3 / 5}#actions .recommended{outline:3px solid #79f2c5;outline-offset:3px;box-shadow:0 0 12px #7beca966}#recommendation{max-width:100%;line-height:1.4}.hand-title{flex-wrap:wrap}

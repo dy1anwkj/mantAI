@@ -33,7 +33,9 @@ and currently legal actions; it does not calculate game rules.
 The landscape table uses the supplied Singapore Mahjong reference photograph
 as tile artwork via CSS sprite windows. The existing 148-tile set is preserved:
 no jokers, Fei tiles, or extra instrument/occupation bonus tiles are added.
-On narrow screens, scroll horizontally to see the entire table.
+Table rows grow with their contents so exposed tiles, headings and result
+badges stay separate. On short windows, scroll vertically to reach your hand;
+on narrow screens, scroll horizontally to see the entire table.
 
 This is one local single-player table against three computer players. Tabs share the
 same table. Refresh preserves the running hand; restarting the Python server

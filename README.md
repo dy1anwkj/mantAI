@@ -71,6 +71,9 @@ AI service is required; the models run locally.
   `data/web_hands/`, including moves, recommendations, and your choices.
 - **Options:** adjust action pacing and enable or disable recommendations.
 
+Table rows expand to fit exposed tiles, recommendations and result badges.
+Short windows scroll vertically; narrow screens can also scroll horizontally.
+
 This is a local single-player table; there is no online multiplayer. Browser
 tabs share the same game. Refreshing preserves the hand and point balances while
 the Python server stays running.
