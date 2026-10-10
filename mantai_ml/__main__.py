@@ -65,6 +65,12 @@ def cmd_evaluate(a):
         sim.print_report(sim.simulate(a.games, seed=a.seed, progress=False), label="Player 1 = strategy engine")
 
 
+def cmd_train_value(a):
+    from .value_train import train_value
+    train_value(a.model, a.out, games=a.games, val_games=a.val_games,
+                epochs=a.epochs, workers=a.workers, seed=a.seed)
+
+
 def cmd_selfplay(a):
     from .selfplay import selfplay
     _ensure_dir(a.out)
@@ -153,6 +159,16 @@ def main(argv=None):
     s.add_argument("--seed", type=int, default=0)
     s.add_argument("--device", help="cpu / mps / cuda (default: best available)")
     s.set_defaults(func=cmd_train)
+
+    s = sub.add_parser("train-value", help="calibrate the search value model on engine-rollout outcomes")
+    s.add_argument("--model", required=True)
+    s.add_argument("--out")
+    s.add_argument("--games", type=int, default=2000)
+    s.add_argument("--val-games", type=int, default=500)
+    s.add_argument("--epochs", type=int, default=20)
+    s.add_argument("--workers", type=int, default=4)
+    s.add_argument("--seed", type=int, default=0)
+    s.set_defaults(func=cmd_train_value)
 
     s = sub.add_parser("evaluate", help="play the model as Player 1 in the simulator")
     s.add_argument("--search-reference", choices=["network", "engine"], default="network",

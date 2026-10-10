@@ -178,6 +178,14 @@ keeps claims under the strategy engine while learning discards.
 Supervised training retains the epoch with the best held-out discard agreement;
 candidate policies still need separate playing-strength evaluation.
 
+The value model can also be calibrated on separate engine-played games, matching
+search's continuation policy. Training retains the best held-out critic and keeps
+the previous critic if it performs better:
+
+```bash
+python -m mantai_ml train-value --model models/alpha_best.pt --games 2000 --val-games 500 --epochs 20
+```
+
 ```bash
 # Self-play from the book-based starting point
 python -m mantai_ml selfplay --iterations 1200 --games 400 --shaping 0 --out models/alpha.pt

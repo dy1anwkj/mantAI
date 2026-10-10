@@ -529,3 +529,19 @@ def test_supervised_training_restores_best_validation_epoch(sim_records, tmp_pat
     selected = load_model(output)[0].state_dict()
     expected = load_model(first)[0].state_dict()
     assert all(torch.equal(selected[k], expected[k]) for k in selected)
+
+
+def test_value_training_preserves_policy_and_retains_best_critic(tmp_path):
+    from mantai_ml.model import load_model
+    from mantai_ml.search import _load_critic
+    from mantai_ml.value_train import train_value
+    path = _tiny_model(tmp_path)
+    before = {k: v.clone() for k, v in load_model(path)[0].state_dict().items()}
+    out = tmp_path / 'calibrated_critic.pt'
+    report = train_value(path, out, games=12, val_games=4, epochs=2,
+                         workers=1, seed=31, log=lambda *_: None)
+    assert report['training_positions'] > 0 and report['validation_positions'] > 0
+    assert report['selected_rmse'] <= report['baseline_rmse']
+    assert out.exists() and _load_critic(str(out)) is not None
+    after = load_model(path)[0].state_dict()
+    assert all(torch.equal(before[k], after[k]) for k in before)
