@@ -115,33 +115,36 @@ is a noisy estimate from simulations; the search compares expected points.
 
 ## Results
 
-**These results were measured before the latest tile-accounting fixes.** They
-document the model's training improvement; playing-strength tests must be rerun
-to measure the corrected decision code.
-
-The recorded comparison used **5,000 identical starting deals per policy** against
-human-style engine opponents, with rule checks enabled. These are policy results
-**without search**; one scoring unit equals one point.
+The corrected decision code was tested on **10,000 identical starting deals per
+policy**, in two batches of 5,000 against human-style engine opponents. Rule checks
+found no errors. These are policy results **without search**; one unit equals one point.
 
 | Player 1 plays as | Win rate | Points per hand | Deal-in rate |
 |---|---:|---:|---:|
-| Previous browser default | 24.92% | +0.3354 | 17.66% |
-| Improved learned policy with learned calls | 27.86% | +0.7848 | 14.58% |
-| **New default: learned discards with engine calls** | **29.62%** | **+0.8832** | **14.68%** |
-| Hand-tuned strategy engine | 32.44% | +1.2756 | 14.22% |
+| **Default policy: learned discards, engine calls** | **28.84%** | **+0.5943** | **15.06%** |
+| Experimental learner-visited-state candidate | 29.18% | +0.6770 | 14.54% |
 
-- The new default gained **+0.5478 points per hand** over the previous default.
-  The approximate paired 95% confidence interval was **[+0.2058, +0.8898]**.
-- Training used decisions from 3,000 engine-played games, followed by 5,000
-  reinforcement-learning games. Most of the observed gain came from the
-  supervised stage; reinforcement learning did not clearly outperform it.
-- The strategy engine remains stronger. The new model with search and its
-  performance against real humans still need evaluation.
+- The candidate's gain was **+0.0827 points per hand**, with an approximate paired
+  95% interval of **[-0.1101, +0.2755]**. This does not establish superiority, so
+  the default policy is retained. Its value model has been recalibrated separately.
+- Additional fine-tuning, reinforcement learning, and a larger network did not
+  establish stronger play. Candidate selection is gated by game outcomes, not
+  teacher agreement alone.
+- On the first 5,000 deals, the strategy engine scored +0.8830 points per hand
+  versus the default's +0.4378. Engine strength, full search performance, and
+  evaluation against real humans remain the next priorities.
 
 Details and limitations: [training improvements](docs/TRAINING_IMPROVEMENTS.md).
-The [evaluation summary](docs/evaluation_summary.json) records the published
-metrics and seed. Earlier search results relate to older checkpoints and should
-not be treated as measurements of the new default.
+The [latest retraining evaluation](docs/retraining_evaluation.json) records the
+seeds, candidate comparisons, and uncertainty. [Earlier metrics](docs/evaluation_summary.json)
+precede the accounting fixes and are retained as historical results.
+
+The experimental policy and a compatible calibrated critic are included for
+review; using them is optional:
+
+```bash
+python web_game.py --model models/visited_candidate.pt
+```
 
 ## Rules
 
@@ -230,8 +233,8 @@ python tools/evaluate_models.py --models models/alpha_best.pt --games 5000 --see
 ```
 
 The included checkpoint is compared with the strategy engine. Add another model
-path to compare policies; the first model is the baseline. Experiment checkpoints
-and raw training data are gitignored and are not required to play.
+path to compare policies; the first model is the baseline. Raw training data and
+other experiment checkpoints are gitignored and are not required to play.
 
 `--search-reference engine` lets the browser's search keep the strategy engine's
 discard unless a challenger scores clearly better on paired simulations. The
@@ -248,8 +251,8 @@ The video tests additionally need `opencv-python` and `pillow`. Without PyTorch,
 the ML tests are skipped. Wall setup and browser integration checks are in
 `tests/test_wall_setup.py` and `tests/test_web_game.py`.
 
-The latest audit passed 256 full-suite tests, then 86 affected-path tests after
-the final fixes. Coverage includes winning shapes, scoring, tile conservation,
+The latest full run passed 261 tests, followed by 60 affected-path tests after
+the learner-state recording update. Coverage includes winning shapes, scoring, tile conservation,
 legal actions, model training, physical dealing, and HTTP integration.
 
 The audit fixed unseen-tile counts after discards and claims, two-step lookahead

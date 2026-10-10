@@ -10,6 +10,8 @@ models/*
 !models/alpha_best.pt
 !models/alpha_critic.pt
 !models/alpha_best_critic.pt
+!models/visited_candidate.pt
+!models/visited_candidate_critic.pt
 # the learned danger model (R_opponent_analysis.py)
 !models/danger.npz
 demo/

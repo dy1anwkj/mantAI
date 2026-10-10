@@ -1,0 +1,218 @@
+{
+  "search_enabled": false,
+  "seeds": [
+    20261022000,
+    20261028000
+  ],
+  "baseline": {
+    "hands": 10000,
+    "points_per_hand": 0.5943,
+    "win_percent": 28.84,
+    "deal_in_percent": 15.06
+  },
+  "experimental_candidate": {
+    "hands": 10000,
+    "points_per_hand": 0.677,
+    "win_percent": 29.18,
+    "deal_in_percent": 14.54
+  },
+  "paired_difference": {
+    "mean": 0.0827,
+    "approximate_95_percent_ci": [
+      -0.11014242794197301,
+      0.27554242794197303
+    ]
+  },
+  "default_policy_changed": false,
+  "reason": "The paired interval includes zero; the candidate is not proven stronger.",
+  "candidate_policy_sha256": "48e5f645be6ecd4e5c8d6b33b58d421c4d81e693bad9cf03295623bb31c65166",
+  "tested_candidates": [
+    {
+      "model": "corrected_teacher.pt",
+      "statistics": {
+        "games": 5000,
+        "errors": 0,
+        "points_per_game": {
+          "mean": 0.436,
+          "approximate_95_percent_ci": [
+            0.17168196894349352,
+            0.7003180310565065
+          ]
+        },
+        "win_percent": 28.34,
+        "deal_in_percent": 15.4
+      },
+      "paired_difference": {
+        "mean": -0.0018,
+        "approximate_95_percent_ci": [
+          -0.27492248672197217,
+          0.2713224867219721
+        ]
+      }
+    },
+    {
+      "model": "corrected_rl_best.pt",
+      "statistics": {
+        "games": 5000,
+        "errors": 0,
+        "points_per_game": {
+          "mean": 0.3658,
+          "approximate_95_percent_ci": [
+            0.10528472592379423,
+            0.6263152740762058
+          ]
+        },
+        "win_percent": 28.34,
+        "deal_in_percent": 15.34
+      },
+      "paired_difference": {
+        "mean": -0.072,
+        "approximate_95_percent_ci": [
+          -0.34419722208476367,
+          0.20019722208476365
+        ]
+      }
+    },
+    {
+      "model": "capacity_candidate.pt",
+      "statistics": {
+        "games": 5000,
+        "errors": 0,
+        "points_per_game": {
+          "mean": 0.203,
+          "approximate_95_percent_ci": [
+            -0.058234922562189595,
+            0.4642349225621896
+          ]
+        },
+        "win_percent": 26.74,
+        "deal_in_percent": 14.78
+      },
+      "paired_difference": {
+        "mean": -0.2348,
+        "approximate_95_percent_ci": [
+          -0.5210150266209654,
+          0.05141502662096542
+        ]
+      }
+    },
+    {
+      "model": "visited_candidate.pt",
+      "statistics": {
+        "games": 5000,
+        "errors": 0,
+        "points_per_game": {
+          "mean": 0.5594,
+          "approximate_95_percent_ci": [
+            0.2940585633225591,
+            0.8247414366774409
+          ]
+        },
+        "win_percent": 29.4,
+        "deal_in_percent": 14.86
+      },
+      "paired_difference": {
+        "mean": 0.1216,
+        "approximate_95_percent_ci": [
+          -0.14911494249530977,
+          0.39231494249530974
+        ]
+      }
+    }
+  ],
+  "critic_calibration": {
+    "seed": 20261021,
+    "training_games": 2000,
+    "validation_games": 500,
+    "training_positions": 24356,
+    "validation_positions": 6125,
+    "baseline_rmse": 9.16818261760561,
+    "selected_rmse": 8.456214326161588,
+    "selected_epoch": 8,
+    "baseline": "previous critic",
+    "improved": true,
+    "history": [
+      {
+        "epoch": 1,
+        "validation_rmse": 9.000434441147524
+      },
+      {
+        "epoch": 2,
+        "validation_rmse": 8.90342180286909
+      },
+      {
+        "epoch": 3,
+        "validation_rmse": 8.730653137034981
+      },
+      {
+        "epoch": 4,
+        "validation_rmse": 8.608791878505478
+      },
+      {
+        "epoch": 5,
+        "validation_rmse": 8.59498748192533
+      },
+      {
+        "epoch": 6,
+        "validation_rmse": 8.550222686187679
+      },
+      {
+        "epoch": 7,
+        "validation_rmse": 8.47669390739157
+      },
+      {
+        "epoch": 8,
+        "validation_rmse": 8.456214326161588
+      },
+      {
+        "epoch": 9,
+        "validation_rmse": 8.458631488324423
+      },
+      {
+        "epoch": 10,
+        "validation_rmse": 8.486749980524559
+      },
+      {
+        "epoch": 11,
+        "validation_rmse": 8.498366703861441
+      },
+      {
+        "epoch": 12,
+        "validation_rmse": 8.521276436051666
+      },
+      {
+        "epoch": 13,
+        "validation_rmse": 8.529761774955968
+      },
+      {
+        "epoch": 14,
+        "validation_rmse": 8.550793295303302
+      },
+      {
+        "epoch": 15,
+        "validation_rmse": 8.674750983542113
+      },
+      {
+        "epoch": 16,
+        "validation_rmse": 8.68223620883108
+      },
+      {
+        "epoch": 17,
+        "validation_rmse": 8.671209856248074
+      },
+      {
+        "epoch": 18,
+        "validation_rmse": 8.774621382584826
+      },
+      {
+        "epoch": 19,
+        "validation_rmse": 8.781721326457951
+      },
+      {
+        "epoch": 20,
+        "validation_rmse": 8.8696070659525
+      }
+    ],
+    "saved": true
+  }
+}

@@ -90,8 +90,9 @@ The first model is the baseline. Reports contain per-hand points, wins, deal-ins
 errors, and approximate paired confidence intervals. Every game enables rule and
 tile-conservation checks. An evaluation with errors exits unsuccessfully.
 
-New experiment checkpoints are local, gitignored artifacts. They must be copied
-or retrained before these commands can be used on another machine.
+Most experiment checkpoints are local, gitignored artifacts. The optional
+`visited_candidate.pt` and its calibrated critic are now included; the older
+experiment checkpoints must be copied or retrained to reproduce their runs.
 
 ## Subsequent correctness audit
 
@@ -106,4 +107,37 @@ honored.
 
 The evaluation tables above were measured before these accounting fixes.
 They remain historical results; playing-strength benchmarks must be rerun
-before attributing the same figures to the corrected decision code.
+before attributing the same figures to the corrected decision code. The later
+corrected-code results are reported below.
+
+## Corrected-code retraining and calibration
+
+Training now retains the best supervised validation epoch. Self-play retains
+the starting policy if later updates perform worse on the fixed selection deals.
+The recorder supports engine advice on states visited by the learner, retaining
+actual behavior separately from teaching labels. ML recording now attaches the
+specified policy, and recordings with rule errors are refused.
+
+The subsequent experiments used 5,000 corrected-engine games, 2,000 additional
+reinforcement-learning games, a 512-unit policy trained from scratch, and 2,000
+learner-played games labeled with engine advice. Fine-tuning, reinforcement
+learning, and larger capacity did not produce convincing playing-strength gains.
+
+The learner-visited-state candidate was tested against the preserved default on
+5,000 deals (seed 20261022000), then another 5,000 independent deals (seed
+20261028000). Combined default results were 28.84% wins, +0.5943 points/hand,
+and 15.06% deal-ins; candidate results were 29.18%, +0.6770, and 14.54%.
+The paired difference was +0.0827 points/hand, with an approximate 95% interval
+of [-0.1101, +0.2755]. The default policy was retained. The candidate is included
+as an experimental option, not a proven replacement. All evaluated hands had
+zero crashes or rule violations.
+
+The default critic was separately trained against engine-rollout returns on
+2,000 games, with 500 disjoint games reserved for validation. Best held-out
+RMSE decreased from 9.168 to 8.456 units, selected at epoch 8. This critic was
+deployed without changing the default policy. The calibration targets match
+search's continuation policy, but improved full-game search performance has
+not been demonstrated.
+
+Public metrics: [retraining evaluation](retraining_evaluation.json) and
+[value calibration](value_calibration.json).
