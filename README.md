@@ -17,7 +17,7 @@ The included default now uses the improved learned discard policy with
 strategy-engine calls and its matching value model. It was trained with
 engine examples and reinforcement learning against varied opponents.
 
-![An earlier mantAI table showing discard recommendations and search scores](docs/screenshot.jpg)
+![The current mantAI table with physical walls, point balances, exposed melds, and the AI discard recommendation with search scores](docs/screenshot.jpg)
 
 ## Quick start
 
