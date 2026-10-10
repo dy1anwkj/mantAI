@@ -156,6 +156,10 @@ Singapore Mahjong with the 148-tile set (flowers, seasons and animals included),
 SPGG Mahjong Rules 2024 decides. Rules and scoring:
 [singapore_rules.py](singapore_rules.py) and [mahjong_simulator.py](mahjong_simulator.py).
 
+The [winning-hand reference review](docs/WINNING_HAND_REFERENCES.md) compares
+the supplied online guides with current scoring and records gaps in special-hand
+planning. These study notes do not imply that the deployed model was retrained.
+
 ## Project layout
 
 | Path | What it is |
