@@ -175,6 +175,8 @@ policy with engine opponents; only Player 1's policy is updated. `--engine-calls
 keeps claims under the strategy engine while learning discards.
 `--games` is the number of games **per iteration**; total training games are
 `--iterations × --games`. Evaluation games are additional.
+Supervised training retains the epoch with the best held-out discard agreement;
+candidate policies still need separate playing-strength evaluation.
 
 ```bash
 # Self-play from the book-based starting point

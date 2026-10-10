@@ -510,3 +510,22 @@ def test_call_features_choose_more_improving_tiles_at_equal_shanten(monkeypatch)
     result = features.call_analysis(hand, [], B(4), [], 1, 'east', ('bamboo', 4), 'chi')
     assert result[2] == pytest.approx(1/8)
     assert result[3] == pytest.approx(24/60)
+
+
+def test_supervised_training_restores_best_validation_epoch(sim_records, tmp_path, monkeypatch):
+    import mantai_ml.train as training
+    from mantai_ml.model import load_model
+    scores = iter([0.9, 0.1])
+    monkeypatch.setattr(training, 'evaluate_accuracy', lambda *args: {'discard_acc': next(scores)})
+    output = tmp_path / 'selected.pt'
+    metrics = training.train([sim_records], str(output), hidden=16, epochs=2,
+                             device='cpu', seed=12, log=lambda *_: None)
+    assert metrics['selected_epoch'] == 1
+    assert metrics['discard_acc'] == 0.9
+    first = tmp_path / 'first.pt'
+    monkeypatch.setattr(training, 'evaluate_accuracy', lambda *args: {'discard_acc': 0.9})
+    training.train([sim_records], str(first), hidden=16, epochs=1,
+                   device='cpu', seed=12, log=lambda *_: None)
+    selected = load_model(output)[0].state_dict()
+    expected = load_model(first)[0].state_dict()
+    assert all(torch.equal(selected[k], expected[k]) for k in selected)

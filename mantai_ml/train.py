@@ -8,6 +8,7 @@ by game_id, so the validation score is on games the model never saw.
 """
 
 import random
+from copy import deepcopy
 from collections import defaultdict
 
 import numpy as np
@@ -93,6 +94,8 @@ def train(paths, out_path, epochs=15, batch_size=256, lr=1e-3, hidden=256,
         Xc, Yc, Wc = _tensors(c_train, device)
 
     metrics = {}
+    best_state, best_metrics, best_accuracy = None, None, -1.0
+    history = []
     for epoch in range(1, epochs + 1):
         net.train()
         perm = torch.randperm(len(Xd), device=device)
@@ -112,11 +115,23 @@ def train(paths, out_path, epochs=15, batch_size=256, lr=1e-3, hidden=256,
             total += loss.item() * len(idx)
         metrics = evaluate_accuracy(net, d_val, c_val, device)
         metrics["train_loss"] = round(total / len(Xd), 4)
+        history.append(dict(epoch=epoch, **metrics))
+        # Retain the best held-out epoch rather than silently publishing an
+        # overfit final epoch. Playing strength is assessed separately.
+        accuracy = metrics.get("discard_acc")
+        if accuracy is not None and accuracy > best_accuracy:
+            best_accuracy = accuracy
+            best_state = deepcopy(net.state_dict())
+            best_metrics = dict(metrics, selected_epoch=epoch)
         log(f"epoch {epoch:2d}  loss {metrics['train_loss']:.4f}  "
             f"discard acc {metrics.get('discard_acc', float('nan')):.3f}  "
             f"call acc {metrics.get('call_acc', float('nan')):.3f}")
 
-    metrics.update(n_discards=len(d_train), n_calls=len(c_train))
+    if best_state is not None:
+        net.load_state_dict(best_state)
+        metrics = best_metrics
+    metrics.update(n_discards=len(d_train), n_calls=len(c_train), history=history,
+                   seed=seed, epochs=epochs, learning_rate=lr)
     save_model(out_path, net.cpu(), metrics)
     log(f"Saved model to {out_path}")
     return metrics
