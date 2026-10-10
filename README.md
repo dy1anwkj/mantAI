@@ -32,7 +32,7 @@ pip install -r requirements.txt
 python web_game.py
 ```
 
-Open **http://127.0.0.1:8000** and select **Play**. The trained models are
+Open **http://127.0.0.1:8002** and select **Play**. The trained models are
 included in `models/`, so there is nothing to train first. Without PyTorch the
 game still runs, with the strategy engine making the recommendations.
 

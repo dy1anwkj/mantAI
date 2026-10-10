@@ -1,6 +1,6 @@
 """Local browser UI for the existing Singapore Mahjong GameSession.
 
-Run: python web_game.py, then open http://127.0.0.1:8000.
+Run: python web_game.py, then open http://127.0.0.1:8002.
 One shared table per server process; intended for local single-player use.
 Players 2-4 play like people: each is the strategy engine with its own style
 (aggressive, balanced or cautious), the stand-ins for the human players the
@@ -356,7 +356,7 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(400, {"error": str(exc)})
 
 
-def create_server(port=8000, brain=None, ai_opponents=False, save_dir=None):
+def create_server(port=8002, brain=None, ai_opponents=False, save_dir=None):
     server = HTTPServer(("127.0.0.1", port), Handler)
     server.table = Table(brain, ai_opponents, save_dir)
     server.token = secrets.token_urlsafe(32)
@@ -365,7 +365,7 @@ def create_server(port=8000, brain=None, ai_opponents=False, save_dir=None):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--port", type=int, default=8002)
     parser.add_argument("--save-hands", action="store_true", help="save hands and recommendations for review")
     parser.add_argument("--engine-only", action="store_true",
                         help="play the strategy engine alone, without the trained models")

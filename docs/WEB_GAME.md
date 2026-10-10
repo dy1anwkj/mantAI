@@ -6,7 +6,7 @@ From the project folder, after installing the requirements (see [README.md](../R
 python web_game.py
 ```
 
-Open **http://127.0.0.1:8000** and click **New hand**. Keep the terminal running.
+Open **http://127.0.0.1:8002** and click **Play**. Keep the terminal running.
 Click a tile in your hand once to discard it. The three opponents play
 automatically, like people would: each is the strategy engine with its own style
 (aggressive, balanced or cautious). Your recommended discard comes from the
@@ -21,8 +21,8 @@ are disabled during playback and claims are offered when playback completes.
 The delay is set by `ACTION_PAUSE_MS` in `web/app.js`. Refreshing skips any
 remaining animation and shows the current game state.
 
-Stop the server with Ctrl+C. If port 8000 is occupied, run with `--port 8001`
-and open http://127.0.0.1:8001 instead.
+Stop the server with Ctrl+C. If port 8002 is occupied, run with `--port 8003`
+and open http://127.0.0.1:8003 instead.
 
 No Node.js is required. The trained models need torch; without it the game
 runs on the strategy engine alone. `web_game.py` serves
