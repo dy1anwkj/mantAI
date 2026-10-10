@@ -173,7 +173,7 @@ function render(){
   $('hand').replaceChildren();
   for(const t of state.hand){const action=state.actions.find(a=>a.kind==='discard'&&same(a.tile,t));$('hand').append(tile(t,false,action?.id??null));}
   $('instruction').textContent=state.over?'Start a new hand to play again.':state.decision==='turn'?'Click a tile once to discard it.':'Choose a claim or pass.';
-  if(busy)$('instruction').textContent='Watch the table — actions pause for 1.5 seconds.';
+  if(busy)$('instruction').textContent=`Watch the table — actions pause for ${ACTION_PAUSE_MS / 1000} seconds.`;
   $('own-public').replaceChildren(publicTiles(0));$('actions').replaceChildren();
   for(const a of state.actions.filter(a=>a.kind!=='discard')){
     $('actions').append(actionButton(actionText(a),a.id));

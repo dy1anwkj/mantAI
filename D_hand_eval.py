@@ -110,7 +110,9 @@ def _normalise_hand(hand):
     return tuple(sorted(hand, key=tile_sort_key))
 
 
-@lru_cache(maxsize=None)
+# Long-running search workers see many distinct hands. Eviction limits retained
+# memory; these pure checks recompute the same answer when an entry is evicted.
+@lru_cache(maxsize=100_000)
 def _can_form_sets_cached(hand_tuple, sets_needed):
     """Exact recursive partition check: can this sorted hand be split into
     `sets_needed` valid melds without ignoring any tiles?
@@ -170,7 +172,7 @@ def is_thirteen_wonders(hand):
     return len(hand) == 14 and set(hand) == THIRTEEN_WONDERS
 
 
-@lru_cache(maxsize=None)
+@lru_cache(maxsize=100_000)
 def _is_winning_cached(hand, sets_needed):
     counts = Counter(hand)
     pair_candidates = [pair_tile for pair_tile, count in counts.items() if count >= 2]
@@ -190,7 +192,7 @@ def winning_tiles(hand, exposed_melds=None):
     return list(_winning_tiles_cached(_normalise_hand(hand), len(exposed_melds)))
 
 
-@lru_cache(maxsize=None)
+@lru_cache(maxsize=50_000)
 def _winning_tiles_cached(hand, meld_count):
     # Only a hand one tile short of complete can be waiting on anything.
     if meld_count > 4 or len(hand) != (4 - meld_count) * 3 + 1:

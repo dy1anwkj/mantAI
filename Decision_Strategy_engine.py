@@ -156,7 +156,8 @@ def _prune_dominated(options):
     ))
 
 
-@lru_cache(maxsize=None)
+# Keep per-suit memoization bounded across long search and training runs.
+@lru_cache(maxsize=50_000)
 def _group_options(group, suited):
     """
     Every useful way to split one suit (or the honours) into complete sets and

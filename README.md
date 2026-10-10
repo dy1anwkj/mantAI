@@ -251,10 +251,15 @@ The video tests additionally need `opencv-python` and `pillow`. Without PyTorch,
 the ML tests are skipped. Wall setup and browser integration checks are in
 `tests/test_wall_setup.py` and `tests/test_web_game.py`.
 
-The latest full run passed 261 tests, followed by 60 affected-path tests after
-the learner-state recording update. Coverage includes winning shapes, scoring, tile conservation,
+The October 10 project audit passed all 262 tests, including the optional video
+pipeline and HTTP integration. Coverage includes winning shapes, scoring, tile conservation,
 legal actions, model training, physical dealing, and HTTP integration.
 
 The audit fixed unseen-tile counts after discards and claims, two-step lookahead
 accounting, Chi option selection at equal shanten, and invalid training settings.
 Details are in [the correctness audit](docs/TRAINING_IMPROVEMENTS.md#subsequent-correctness-audit).
+
+Hand and suit evaluation caches have fixed size limits so long search and
+training sessions do not retain every position indefinitely. Replaying 160
+seeded games with caches retained versus cleared produced identical outcomes.
+See [the project audit](docs/PROJECT_AUDIT.md) for validation scope and limits.
